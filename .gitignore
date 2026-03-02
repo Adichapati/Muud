@@ -1,0 +1,41 @@
+# ─── Python ──────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ─── Jupyter ─────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ─── Datasets (large — download separately) ─────────────────
+data/DEAM/
+data/GTZAN/
+data/FMA/
+
+# ─── Trained model weights ──────────────────────────────────
+# Keep .keras and .pkl out of version control (large binaries).
+# Re-generate by running the training notebooks.
+models/*.keras
+models/*.pkl
+models/*.h5
+
+# ─── Audio test files ────────────────────────────────────────
+test_audio/
+
+# ─── OS / IDE junk ──────────────────────────────────────────
+desktop.ini
+Thumbs.db
+.DS_Store
+.vscode/
+*.swp
+*.swo
+
+# ─── Temporary recordings ────────────────────────────────────
+muud_rec_*.wav
+
+# ─── Misc ────────────────────────────────────────────────────
+*.log
+*.zip
