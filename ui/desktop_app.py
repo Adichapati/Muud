@@ -3,6 +3,7 @@ desktop_app.py
 --------------
 Retro arcade-styled Tkinter GUI for Muud — Music Intelligence System.
 Browse audio → Analyze → View genre/emotion → Get recommendations.
+Live mic mode: real-time spectrogram + rolling genre/emotion predictions.
 
 Visual theme: dark navy background, neon accents (cyan / magenta / green),
 pixel-style fonts, 3D raised buttons with hover glow.
@@ -13,9 +14,12 @@ import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import threading
+from collections import deque
 
 import sounddevice as sd
 import scipy.io.wavfile as wav_io
+import numpy as np
+import librosa
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -153,11 +157,19 @@ class MuudApp:
         self._selected_path = None
         self._temp_recording = None   # path to current temp WAV (if any)
 
+        # ── Live mic state ──────────────────────────────────────
+        self._live_active = False
+        self._live_stream = None            # sd.InputStream
+        self._live_buffer = deque(maxlen=22050 * 30)  # up to 30 s ring buffer
+        self._live_inference_job = None     # root.after id
+        self._live_spec_job = None          # root.after id for spectrogram refresh
+        self._live_sr = 22050
+
         # ── Root window ─────────────────────────────────────────
         self.root = tk.Tk()
         self.root.title("MUUD — Music Intelligence")
-        self.root.geometry("1150x820")
-        self.root.minsize(1050, 700)
+        self.root.geometry("1350x860")
+        self.root.minsize(1200, 750)
         self.root.configure(bg=BG_DARK)
 
         self._build_ui()
@@ -204,23 +216,36 @@ class MuudApp:
 
         # ── Title Block ─────────────────────────────────────────
         title_frame = tk.Frame(root, bg=BG_DARK)
-        title_frame.pack(pady=(18, 0))
+        title_frame.pack(pady=(14, 0))
 
-        tk.Label(
+        self._title_label = tk.Label(
             title_frame, text="\u25c6  M U U D  \u25c6",
             font=FONT_TITLE, fg=NEON_CYAN, bg=BG_DARK,
-        ).pack()
+        )
+        self._title_label.pack()
 
+        sub_frame = tk.Frame(title_frame, bg=BG_DARK)
+        sub_frame.pack(pady=(2, 0))
         tk.Label(
-            title_frame,
+            sub_frame,
             text="HYBRID  SOFT  COMPUTING  MUSIC  INTELLIGENCE",
             font=FONT_SUBTITLE, fg=TEXT_DIM, bg=BG_DARK,
-        ).pack(pady=(4, 0))
+        ).pack(side="left")
+        tk.Label(
+            sub_frame, text="  v2.0",
+            font=("Consolas", 8), fg="#3a4060", bg=BG_DARK,
+        ).pack(side="left", padx=(6, 0))
 
         # Dashed glow line under title
         glow = tk.Canvas(root, height=5, bg=BG_DARK, highlightthickness=0)
-        glow.pack(fill="x", padx=60, pady=(8, 0))
+        glow.pack(fill="x", padx=60, pady=(6, 0))
         glow.create_line(0, 2, 2000, 2, fill=NEON_MAGENTA, width=1, dash=(6, 4))
+
+        # Start title pulse animation
+        self._title_colors = [NEON_CYAN, "#00ccdd", "#00b3bb", "#009999",
+                              "#00b3bb", "#00ccdd"]
+        self._title_color_idx = 0
+        self._pulse_title()
 
         # ── File Selection Panel ────────────────────────────────
         file_panel = self._make_panel(root, " \u25b8 AUDIO INPUT ")
@@ -274,6 +299,12 @@ class MuudApp:
             color=NEON_MAGENTA, width=190, height=42,
         )
         self.record_btn.pack(side="left", padx=12)
+
+        self.live_btn = NeonButton(
+            btn_frame, text="\U0001f3a4 LIVE MIC", command=self._toggle_live_mic,
+            color="#ff6600", width=190, height=42,
+        )
+        self.live_btn.pack(side="left", padx=12)
 
         self._blink_job = None          # after-id for recording blink
 
@@ -329,13 +360,29 @@ class MuudApp:
         self._recommend_frame = tk.Frame(results_inner, bg=BG_PANEL)
         self._build_recommend_table()
 
-        # Right — Valence-Arousal plot
-        va_panel = self._make_panel(content_frame, " \u25b8 V\u2013A SPACE ")
-        va_panel.pack(side="right", fill="both", padx=(6, 0))
+        # Right — Valence-Arousal plot / Live spectrogram (stacked)
+        right_frame = tk.Frame(content_frame, bg=BG_DARK, width=380)
+        right_frame.pack(side="right", fill="both", padx=(6, 0))
+        right_frame.pack_propagate(False)
+
+        va_panel = self._make_panel(right_frame, " \u25b8 V\u2013A SPACE ")
+        va_panel.pack(fill="both", expand=True)
 
         va_inner = tk.Frame(va_panel, bg=BG_PANEL)
         va_inner.pack(fill="both", expand=True, padx=6, pady=6)
         self._build_va_plot(va_inner)
+
+        # Live spectrogram panel (hidden by default — shown when LIVE MIC active)
+        self._live_panel = self._make_panel(right_frame, " \u25b8 LIVE SPECTROGRAM ")
+        self._live_info_var = tk.StringVar(value="")
+        self._live_info_label = tk.Label(
+            self._live_panel, textvariable=self._live_info_var,
+            font=FONT_SMALL, fg=NEON_GREEN, bg=BG_PANEL, anchor="w", padx=8,
+        )
+        self._live_info_label.pack(fill="x", pady=(4, 0))
+        live_inner = tk.Frame(self._live_panel, bg=BG_PANEL)
+        live_inner.pack(fill="both", expand=True, padx=6, pady=6)
+        self._build_live_spectrogram(live_inner)
 
         # ── Bottom scanline ─────────────────────────────────────
         bot = tk.Canvas(root, height=3, bg=BG_DARK, highlightthickness=0)
@@ -430,6 +477,16 @@ class MuudApp:
         t.insert("end", f"{g['top_genre'].upper()}", "highlight")
         t.insert("end", f"   ({g['confidence']:.1%} confidence)\n", "dim")
         t.insert("end", "  \u2502\n", "heading")
+
+        # ── Top-3 Genre Probabilities ───────────────────────────
+        top3 = sorted(g["fuzzy_memberships"].items(), key=lambda x: -x[1])[:3]
+        t.insert("end", "  \u2502  Genre Probabilities:\n", "dim")
+        for label, score in top3:
+            t.insert("end", f"  \u2502    {label}", "highlight")
+            t.insert("end", f" \u2014 {score * 100:.1f}%\n", "value")
+        t.insert("end", "  \u2502\n", "heading")
+
+        # ── Full Fuzzy Memberships ──────────────────────────────
         t.insert("end", "  \u2502  Fuzzy Memberships:\n", "dim")
 
         for label, score in sorted(g["fuzzy_memberships"].items(), key=lambda x: -x[1]):
@@ -455,7 +512,7 @@ class MuudApp:
         t.config(state="disabled")
 
         # Update V-A scatter plot
-        self._update_va_plot(e['valence'], e['arousal'])
+        self._update_va_plot(e['valence'], e['arousal'], g['confidence'])
 
     # ════════════════════════════════════════════════════════════
     #  RECOMMENDATION
@@ -522,7 +579,7 @@ class MuudApp:
         self._sort_reverse.clear()
 
         # Update V-A scatter plot
-        self._update_va_plot(e['valence'], e['arousal'])
+        self._update_va_plot(e['valence'], e['arousal'], g['confidence'])
 
     # ════════════════════════════════════════════════════════════
     #  RECOMMENDATION TABLE + UI FRAME HELPERS
@@ -764,13 +821,20 @@ class MuudApp:
     #  HELPERS
     # ════════════════════════════════════════════════════════════
 
+    def _pulse_title(self):
+        """Subtle colour-cycling animation on the title label."""
+        color = self._title_colors[self._title_color_idx]
+        self._title_label.config(fg=color)
+        self._title_color_idx = (self._title_color_idx + 1) % len(self._title_colors)
+        self.root.after(600, self._pulse_title)
+
     # ════════════════════════════════════════════════════════════
     #  VALENCE-AROUSAL PLOT
     # ════════════════════════════════════════════════════════════
 
     def _build_va_plot(self, parent):
         """Create the retro-styled Valence-Arousal 2D scatter plot."""
-        fig = Figure(figsize=(3.9, 3.9), dpi=96, facecolor=BG_DARK)
+        fig = Figure(figsize=(3.6, 3.4), dpi=96, facecolor=BG_DARK)
         ax = fig.add_subplot(111)
 
         ax.set_facecolor(BG_INPUT)
@@ -814,29 +878,39 @@ class MuudApp:
         self._va_canvas = canvas
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
-    def _update_va_plot(self, valence, arousal):
-        """Plot (or re-plot) the current song as a glowing dot."""
+    def _update_va_plot(self, valence, arousal, confidence=0.5):
+        """Plot (or re-plot) the current song as a confidence-scaled dot.
+
+        Marker size scales with *confidence* (genre prediction strength)
+        so that high-confidence predictions appear visually stronger.
+        """
         ax = self._va_ax
+        conf = max(0.1, min(float(confidence), 1.0))  # clamp to [0.1, 1.0]
 
         # Remove previous dot artists
         for art in self._va_artists:
             art.remove()
         self._va_artists.clear()
 
+        # Sizes scale with confidence: base × confidence
+        core_size = 200 * conf
+
         # Glow layers (large → small, increasing alpha)
-        for size, alpha in [(320, 0.08), (200, 0.16), (110, 0.28)]:
-            d = ax.scatter(valence, arousal, s=size, c=NEON_MAGENTA,
-                           alpha=alpha, zorder=5, edgecolors="none")
+        for scale, alpha in [(4.0, 0.08), (2.5, 0.16), (1.6, 0.28)]:
+            d = ax.scatter(valence, arousal, s=core_size * scale,
+                           c=NEON_MAGENTA, alpha=alpha * conf,
+                           zorder=5, edgecolors="none")
             self._va_artists.append(d)
 
         # Core dot
-        d = ax.scatter(valence, arousal, s=64, c=NEON_MAGENTA, alpha=0.95,
+        d = ax.scatter(valence, arousal, s=core_size, c=NEON_MAGENTA,
+                       alpha=0.5 + 0.45 * conf,
                        zorder=6, edgecolors=NEON_CYAN, linewidths=1.2)
         self._va_artists.append(d)
 
         # Coordinate label
         lbl = ax.annotate(
-            f"({valence:.1f}, {arousal:.1f})",
+            f"({valence:.1f}, {arousal:.1f})  {conf:.0%}",
             (valence, arousal),
             textcoords="offset points", xytext=(12, 10),
             fontsize=8, fontfamily="Consolas",
@@ -867,11 +941,13 @@ class MuudApp:
         self.recommend_btn.set_enabled(False)
         self.explain_btn.set_enabled(False)
         self.record_btn.set_enabled(False)
+        self.live_btn.set_enabled(False)
 
     def _enable_buttons(self):
         self.analyze_btn.set_enabled(True)
         self.recommend_btn.set_enabled(True)
         self.record_btn.set_enabled(True)
+        self.live_btn.set_enabled(True)
 
     def _run_in_thread(self, target):
         """Run a function in a background thread to keep UI responsive."""
@@ -950,6 +1026,207 @@ class MuudApp:
         if self._blink_job is not None:
             self.root.after_cancel(self._blink_job)
             self._blink_job = None
+
+    # ════════════════════════════════════════════════════════════
+    #  LIVE MICROPHONE — spectrogram + rolling inference
+    # ════════════════════════════════════════════════════════════
+
+    def _build_live_spectrogram(self, parent):
+        """Create the live mel-spectrogram plot (hidden until activated)."""
+        fig = Figure(figsize=(3.9, 2.8), dpi=96, facecolor=BG_DARK)
+        ax = fig.add_subplot(111)
+
+        ax.set_facecolor(BG_INPUT)
+        ax.set_xlabel("Time (frames)", color=NEON_CYAN, fontsize=8,
+                       fontfamily="Consolas")
+        ax.set_ylabel("Mel bin", color=NEON_CYAN, fontsize=8,
+                       fontfamily="Consolas")
+        ax.tick_params(colors=TEXT_DIM, labelsize=7)
+        for spine in ax.spines.values():
+            spine.set_color(BORDER)
+
+        # Initialise with blank image (128 mel bins × 200 time frames)
+        self._live_spec_data = np.zeros((128, 200), dtype=np.float32)
+        self._live_im = ax.imshow(
+            self._live_spec_data, aspect="auto", origin="lower",
+            cmap="magma", vmin=-3, vmax=3,
+            interpolation="nearest",
+        )
+        fig.tight_layout(pad=1.0)
+
+        self._live_fig = fig
+        self._live_ax = ax
+        self._live_canvas = FigureCanvasTkAgg(fig, master=parent)
+        self._live_canvas.draw()
+        self._live_canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    def _toggle_live_mic(self):
+        """Start / stop the live microphone stream."""
+        if self._live_active:
+            self._stop_live_mic()
+        else:
+            self._start_live_mic()
+
+    def _start_live_mic(self):
+        """Open mic stream, show spectrogram panel, begin updates."""
+        self._live_active = True
+        self._live_buffer.clear()
+        self._live_spec_data = np.zeros((128, 200), dtype=np.float32)
+        self.recommender.genre_clf.clear_live_history()
+
+        # Update button text
+        self.live_btn.text = "\u25a0 STOP MIC"
+        self.live_btn.color = "#ff3333"
+        self.live_btn._draw_normal()
+
+        # Disable file-based buttons while live
+        self.analyze_btn.set_enabled(False)
+        self.recommend_btn.set_enabled(False)
+        self.explain_btn.set_enabled(False)
+        self.record_btn.set_enabled(False)
+
+        # Show live panel
+        self._live_panel.pack(fill="both", expand=True, pady=(6, 0))
+
+        self.status_var.set("[ \u25cf LIVE MIC ACTIVE \u2014 listening \u2026 ]")
+        self._live_info_var.set("  Buffering audio \u2026")
+
+        try:
+            self._live_stream = sd.InputStream(
+                samplerate=self._live_sr,
+                channels=1,
+                dtype="float32",
+                blocksize=1024,
+                callback=self._mic_callback,
+            )
+            self._live_stream.start()
+        except Exception as e:
+            messagebox.showerror("Mic Error", str(e))
+            self._stop_live_mic()
+            return
+
+        # Schedule periodic updates
+        self._live_spec_job = self.root.after(150, self._update_live_spectrogram)
+        self._live_inference_job = self.root.after(6000, self._schedule_live_inference)
+
+    def _stop_live_mic(self):
+        """Stop mic stream and hide live panel."""
+        self._live_active = False
+
+        if self._live_stream is not None:
+            try:
+                self._live_stream.stop()
+                self._live_stream.close()
+            except Exception:
+                pass
+            self._live_stream = None
+
+        # Cancel scheduled jobs
+        if self._live_spec_job is not None:
+            self.root.after_cancel(self._live_spec_job)
+            self._live_spec_job = None
+        if self._live_inference_job is not None:
+            self.root.after_cancel(self._live_inference_job)
+            self._live_inference_job = None
+
+        # Restore button
+        self.live_btn.text = "\U0001f3a4 LIVE MIC"
+        self.live_btn.color = "#ff6600"
+        self.live_btn._draw_normal()
+
+        # Hide live panel
+        self._live_panel.pack_forget()
+
+        # Re-enable buttons
+        self._enable_buttons()
+        if self._selected_path:
+            self.analyze_btn.set_enabled(True)
+            self.recommend_btn.set_enabled(True)
+        else:
+            self.analyze_btn.set_enabled(False)
+            self.recommend_btn.set_enabled(False)
+        self.explain_btn.set_enabled(bool(self.result and "recommendations" in self.result))
+
+        self.status_var.set("[ LIVE MIC STOPPED ]")
+        self._live_info_var.set("")
+
+    def _mic_callback(self, indata, frames, time_info, status):
+        """sounddevice callback — append samples to the ring buffer."""
+        self._live_buffer.extend(indata[:, 0])
+
+    def _update_live_spectrogram(self):
+        """Periodically redraw the rolling mel spectrogram from the buffer."""
+        if not self._live_active:
+            return
+
+        buf = np.array(self._live_buffer, dtype=np.float32)
+        if len(buf) > 2048:
+            # Compute mel spectrogram of the last ~3 s (or whatever is available)
+            tail = buf[-self._live_sr * 3:]
+            try:
+                mel = librosa.feature.melspectrogram(
+                    y=tail, sr=self._live_sr, n_mels=128,
+                    n_fft=2048, hop_length=512,
+                )
+                mel_db = librosa.power_to_db(mel, ref=np.max)
+                std = mel_db.std()
+                if std > 0:
+                    mel_db = (mel_db - mel_db.mean()) / std
+
+                # Roll existing data left and paste new columns
+                n_new = mel_db.shape[1]
+                if n_new >= 200:
+                    self._live_spec_data = mel_db[:, -200:]
+                else:
+                    self._live_spec_data = np.roll(self._live_spec_data, -n_new, axis=1)
+                    self._live_spec_data[:, -n_new:] = mel_db
+
+                self._live_im.set_data(self._live_spec_data)
+                self._live_canvas.draw_idle()
+            except Exception:
+                pass  # skip frame on error
+
+        self._live_spec_job = self.root.after(200, self._update_live_spectrogram)
+
+    def _schedule_live_inference(self):
+        """Schedule a background inference on accumulated live audio."""
+        if not self._live_active:
+            return
+        buf = np.array(self._live_buffer, dtype=np.float32)
+        if len(buf) >= self._live_sr * 3:  # need at least 3 s
+            thread = threading.Thread(
+                target=self._do_live_inference, args=(buf.copy(),), daemon=True,
+            )
+            thread.start()
+        # Re-schedule next inference cycle
+        self._live_inference_job = self.root.after(7000, self._schedule_live_inference)
+
+    def _do_live_inference(self, signal):
+        """Run genre + emotion on the buffered signal (background thread)."""
+        try:
+            result = self.recommender.analyze_signal(signal, self._live_sr, "live mic")
+            g = result["genre"]
+            e = result["emotion"]
+
+            info = (
+                f"  Genre: {g['top_genre'].upper()}  ({g['confidence']:.0%})   "
+                f"\u00b7   Mood: {e['mood_label']}  "
+                f"(V={e['valence']:.1f}  A={e['arousal']:.1f})"
+            )
+            # Update UI from main thread
+            self.root.after(0, self._live_info_var.set, info)
+            self.root.after(0, lambda v=e["valence"], a=e["arousal"], c=g["confidence"]: self._update_va_plot(v, a, c))
+            self.root.after(0, self.status_var.set,
+                            f"[ \u25cf LIVE MIC \u2014 {g['top_genre'].upper()} ]")
+            # Populate the analysis panel so the user sees full details
+            self.root.after(0, self._show_live_analysis, result)
+        except Exception as exc:
+            self.root.after(0, self._live_info_var.set, f"  Inference error: {exc}")
+
+    def _show_live_analysis(self, result):
+        """Update the analysis text panel with live mic inference results."""
+        self.result = result
+        self._show_analysis(result)
 
     # ── Launch ──────────────────────────────────────────────────
 

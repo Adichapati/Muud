@@ -1,0 +1,61 @@
+song,artist,genre,valence,arousal
+Comfortably Numb,Pink Floyd,Rock,3.5,3.0
+Back in Black,AC/DC,Rock,6.5,7.5
+Bohemian Rhapsody,Queen,Rock,5.0,6.5
+Stairway to Heaven,Led Zeppelin,Rock,4.5,4.0
+Hotel California,Eagles,Rock,4.0,3.5
+Nuvole Bianche,Ludovico Einaudi,Classical,4.0,2.5
+Spring - Vivaldi,Vivaldi,Classical,7.0,6.5
+Clair de Lune,Debussy,Classical,5.5,2.0
+Moonlight Sonata,Beethoven,Classical,3.0,3.0
+Canon in D,Pachelbel,Classical,6.5,3.5
+So What,Miles Davis,Folk,5.5,3.5
+Take Five,Dave Brubeck,Folk,6.0,4.5
+Autumn Leaves,Bill Evans,Folk,4.5,3.0
+Blue in Green,Miles Davis,Folk,3.5,2.5
+Round Midnight,Thelonious Monk,Folk,3.0,3.0
+The Thrill Is Gone,B.B. King,Folk,3.0,3.5
+Cross Road Blues,Robert Johnson,Folk,3.5,5.0
+Blinding Lights,The Weeknd,Pop,6.5,7.0
+Someone Like You,Adele,Pop,3.0,2.5
+Shape of You,Ed Sheeran,Pop,6.0,6.0
+Bad Guy,Billie Eilish,Pop,5.0,5.5
+Levitating,Dua Lipa,Pop,7.0,7.0
+Rapper's Delight,Sugarhill Gang,Hip-Hop,7.0,6.5
+Lose Yourself,Eminem,Hip-Hop,4.5,8.0
+Sicko Mode,Travis Scott,Hip-Hop,5.0,7.5
+Juicy,Notorious B.I.G.,Hip-Hop,6.5,6.0
+HUMBLE.,Kendrick Lamar,Hip-Hop,5.0,7.0
+No Woman No Cry,Bob Marley,International,5.5,3.0
+Redemption Song,Bob Marley,International,4.0,2.5
+Three Little Birds,Bob Marley,International,7.5,4.0
+Mas Que Nada,Sergio Mendes,International,7.0,6.0
+La Bamba,Ritchie Valens,International,7.5,7.0
+Master of Puppets,Metallica,Rock,4.0,8.5
+Ace of Spades,Motorhead,Rock,5.5,8.5
+Enter Sandman,Metallica,Rock,4.5,7.5
+Ring of Fire,Johnny Cash,Folk,6.0,5.0
+Jolene,Dolly Parton,Folk,4.0,4.5
+Around the World,Daft Punk,Electronic,6.0,7.0
+Strobe,Deadmau5,Electronic,4.5,5.5
+Midnight City,M83,Electronic,6.0,6.5
+Get Lucky,Daft Punk,Electronic,7.0,6.0
+Scary Monsters and Nice Sprites,Skrillex,Electronic,5.0,8.5
+Sandstorm,Darude,Electronic,6.5,8.0
+Revolution 9,The Beatles,Experimental,3.0,6.0
+Threnody for the Victims of Hiroshima,Penderecki,Experimental,2.0,7.5
+Metal Machine Music,Lou Reed,Experimental,2.5,8.0
+4'33",John Cage,Experimental,5.0,1.0
+Baba O'Riley,The Who,Rock,6.0,7.0
+Purple Rain,Prince,Rock,4.5,5.0
+Foggy Mountain Breakdown,Flatt and Scruggs,Old-Time / Historic,6.5,6.0
+Orange Blossom Special,Johnny Cash,Old-Time / Historic,6.0,7.5
+Wildwood Flower,Carter Family,Old-Time / Historic,5.5,3.5
+Maple Leaf Rag,Scott Joplin,Old-Time / Historic,7.0,6.5
+St. Louis Blues,Bessie Smith,Old-Time / Historic,3.5,4.0
+Sakura Sakura,Traditional Japanese,Instrumental,5.0,2.5
+Cavatina,John Williams,Instrumental,4.5,2.0
+Eruption,Van Halen,Instrumental,6.0,8.5
+YYZ,Rush,Instrumental,5.5,7.5
+Classical Gas,Mason Williams,Instrumental,6.5,5.5
+Orion,Metallica,Instrumental,4.0,6.5

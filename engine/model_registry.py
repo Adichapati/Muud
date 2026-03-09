@@ -31,7 +31,7 @@ class ModelRegistry:
 
         print("[ModelRegistry] Loading genre model …")
         self.genre_model: tf.keras.Model = tf.keras.models.load_model(
-            os.path.join(models_dir, "genre_mel_cnn.keras")
+            os.path.join(models_dir, "genre_fma_cnn.keras")
         )
 
         print("[ModelRegistry] Loading emotion model …")
@@ -51,12 +51,13 @@ class ModelRegistry:
         """
         print("[ModelRegistry] Warming up models …")
 
-        # Genre model: expects (1, 128, T, 1) — use T=130 (≈3 s at 22 050 Hz)
-        dummy_mel = np.zeros((1, 128, 130, 1), dtype=np.float32)
-        self.genre_model.predict(dummy_mel, verbose=0)
+        # Genre model: expects (1, 128, 431, 1) — FMA mel spectrogram shape
+        dummy_genre_mel = np.zeros((1, 128, 431, 1), dtype=np.float32)
+        self.genre_model.predict(dummy_genre_mel, verbose=0)
 
-        # Emotion model: expects [mel, stats] with stats shape (1, 4)
+        # Emotion model: expects (1, 128, 130, 1) mel + (1, 4) stats
+        dummy_emo_mel = np.zeros((1, 128, 130, 1), dtype=np.float32)
         dummy_stats = np.zeros((1, 4), dtype=np.float32)
-        self.emotion_model.predict([dummy_mel, dummy_stats], verbose=0)
+        self.emotion_model.predict([dummy_emo_mel, dummy_stats], verbose=0)
 
         print("[ModelRegistry] Warm-up complete ✓")

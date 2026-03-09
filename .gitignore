@@ -6,6 +6,13 @@ __pycache__/
 dist/
 build/
 *.egg
+*.whl
+
+# ─── Virtual environments ───────────────────────────────────
+.env/
+.venv/
+env/
+venv/
 
 # ─── Jupyter ─────────────────────────────────────────────────
 .ipynb_checkpoints/
@@ -16,11 +23,14 @@ data/GTZAN/
 data/FMA/
 
 # ─── Trained model weights ──────────────────────────────────
-# Keep .keras and .pkl out of version control (large binaries).
-# Re-generate by running the training notebooks.
+# Re-generate by running training notebooks or Colab scripts.
+# genre_labels.json is kept (small, needed at runtime).
 models/*.keras
 models/*.pkl
 models/*.h5
+
+# ─── Intermediate training artefacts ────────────────────────
+*.npy
 
 # ─── Audio test files ────────────────────────────────────────
 test_audio/
@@ -33,8 +43,9 @@ Thumbs.db
 *.swp
 *.swo
 
-# ─── Temporary recordings ────────────────────────────────────
+# ─── Temporary / scratch files ──────────────────────────────
 muud_rec_*.wav
+_smoke.py
 
 # ─── Misc ────────────────────────────────────────────────────
 *.log
