@@ -14,7 +14,9 @@ import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import threading
+import urllib.request
 from collections import deque
+from io import BytesIO
 
 import sounddevice as sd
 import scipy.io.wavfile as wav_io
@@ -23,6 +25,19 @@ import librosa
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+try:
+    from PIL import Image, ImageTk
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
+
+try:
+    import pygame
+    pygame.mixer.init()
+    _HAS_PYGAME = True
+except Exception:
+    _HAS_PYGAME = False
 
 from engine.fusion import emotion_similarity, genre_similarity
 
@@ -156,6 +171,11 @@ class MuudApp:
         self.result = None
         self._selected_path = None
         self._temp_recording = None   # path to current temp WAV (if any)
+
+        # ── Preview playback state ──────────────────────────────
+        self._preview_playing = False
+        self._preview_tmp_path = None      # temp file for current preview
+        self._preview_art_refs = []        # keep PhotoImage refs alive
 
         # ── Live mic state ──────────────────────────────────────
         self._live_active = False
@@ -565,7 +585,7 @@ class MuudApp:
         # Insert recommendations
         for i, rec in enumerate(result["recommendations"], 1):
             tag = "top" if i == 1 else "normal"
-            self._rec_tree.insert("", "end", values=(
+            self._rec_tree.insert("", "end", iid=str(i), values=(
                 i,
                 rec["title"],
                 rec["artist"],
@@ -574,6 +594,9 @@ class MuudApp:
                 f"{rec['arousal']:.2f}",
                 f"{rec['score']:.4f}",
             ), tags=(tag,))
+
+        # ── Build card rows with album art + preview buttons ─────
+        self._build_recommend_cards(result["recommendations"])
 
         # Reset sort state
         self._sort_reverse.clear()
@@ -646,6 +669,34 @@ class MuudApp:
         self._explain_visible = False
         self._explain_outer = tk.Frame(rf, bg=BG_PANEL)
         self._build_explain_panel()
+
+        # ── Cards container (album art + play buttons) ──────────
+        self._cards_outer = tk.Frame(rf, bg=BG_PANEL)
+        self._cards_canvas = tk.Canvas(
+            self._cards_outer, bg=BG_PANEL, highlightthickness=0,
+        )
+        self._cards_scrollbar = tk.Scrollbar(
+            self._cards_outer, orient="vertical",
+            command=self._cards_canvas.yview,
+            bg=BG_PANEL, troughcolor=BG_INPUT,
+            activebackground=NEON_CYAN, width=10,
+        )
+        self._cards_inner = tk.Frame(self._cards_canvas, bg=BG_PANEL)
+        self._cards_inner.bind(
+            "<Configure>",
+            lambda e: self._cards_canvas.configure(
+                scrollregion=self._cards_canvas.bbox("all")),
+        )
+        self._cards_canvas.create_window(
+            (0, 0), window=self._cards_inner, anchor="nw",
+        )
+        self._cards_canvas.configure(yscrollcommand=self._cards_scrollbar.set)
+        # Mouse wheel scrolling
+        self._cards_canvas.bind_all(
+            "<MouseWheel>",
+            lambda e: self._cards_canvas.yview_scroll(
+                int(-1 * (e.delta / 120)), "units"),
+        )
 
     def _sort_treeview(self, col):
         """Sort recommendation table by *col*, toggling direction."""
@@ -816,6 +867,212 @@ class MuudApp:
         """Switch the left panel to show the recommendation table."""
         self._analysis_frame.pack_forget()
         self._recommend_frame.pack(fill="both", expand=True)
+
+    # ════════════════════════════════════════════════════════════
+    #  SPOTIFY PREVIEW PLAYBACK + ALBUM ART CARDS
+    # ════════════════════════════════════════════════════════════
+
+    def _build_recommend_cards(self, recommendations):
+        """Populate card rows with album art thumbnails and ▶ play buttons."""
+        # Stop any playing preview
+        self._stop_preview()
+
+        # Clear old cards
+        for w in self._cards_inner.winfo_children():
+            w.destroy()
+        self._preview_art_refs.clear()
+
+        has_any_preview = any(r.get("preview_url") for r in recommendations)
+        if not has_any_preview and not any(r.get("album_art") for r in recommendations):
+            # No Spotify data — hide card panel
+            self._cards_outer.pack_forget()
+            return
+
+        # Show card panel below the treeview
+        self._cards_outer.pack(fill="both", expand=True, pady=(6, 0))
+        self._cards_scrollbar.pack(side="right", fill="y")
+        self._cards_canvas.pack(side="left", fill="both", expand=True)
+
+        for i, rec in enumerate(recommendations):
+            self._create_card_row(i, rec)
+
+    def _create_card_row(self, index, rec):
+        """Create a single recommendation card with art + info + play button."""
+        row_bg = "#0f2a18" if index == 0 else BG_INPUT
+        row = tk.Frame(self._cards_inner, bg=row_bg, pady=4, padx=6)
+        row.pack(fill="x", pady=2, padx=4)
+
+        # ── Album art (64×64) ────────────────────────────────────
+        art_url = rec.get("album_art")
+        art_label = tk.Label(row, bg=row_bg, width=64, height=64)
+        art_label.pack(side="left", padx=(0, 8))
+
+        if art_url and _HAS_PIL:
+            # Download and resize in background thread
+            threading.Thread(
+                target=self._load_album_art,
+                args=(art_url, art_label, row_bg),
+                daemon=True,
+            ).start()
+        else:
+            art_label.config(
+                text="\u266b", font=("Consolas", 18),
+                fg=TEXT_DIM, width=5, height=2,
+            )
+
+        # ── Track info ──────────────────────────────────────────
+        info_frame = tk.Frame(row, bg=row_bg)
+        info_frame.pack(side="left", fill="x", expand=True)
+
+        title_color = NEON_GREEN if index == 0 else TEXT_PRIMARY
+        tk.Label(
+            info_frame,
+            text=f"{index + 1}. {rec['title']}",
+            font=FONT_BODY_B, fg=title_color, bg=row_bg,
+            anchor="w",
+        ).pack(fill="x")
+
+        tk.Label(
+            info_frame,
+            text=f"{rec['artist']}  \u00b7  {rec['genre'].upper()}  \u00b7  Score: {rec['score']:.4f}",
+            font=FONT_SMALL, fg=TEXT_DIM, bg=row_bg,
+            anchor="w",
+        ).pack(fill="x")
+
+        # V/A and emotion status
+        va_text = f"V={rec['valence']:.1f}  A={rec['arousal']:.1f}"
+        analyzed = rec.get("emotion_analyzed", False)
+        if analyzed:
+            va_text += "  \u2713 emotion analyzed"
+        tk.Label(
+            info_frame, text=va_text,
+            font=("Consolas", 8), fg=NEON_CYAN if analyzed else TEXT_DIM,
+            bg=row_bg, anchor="w",
+        ).pack(fill="x")
+
+        # ── Play / Open buttons ──────────────────────────────────
+        btn_frame = tk.Frame(row, bg=row_bg)
+        btn_frame.pack(side="right", padx=(8, 0))
+
+        preview_url = rec.get("preview_url")
+        if preview_url and _HAS_PYGAME:
+            play_btn = tk.Button(
+                btn_frame, text="\u25b6 Play",
+                font=FONT_SMALL, fg=BG_DARK, bg=NEON_GREEN,
+                activebackground="#2ecc40", activeforeground=BG_DARK,
+                relief="flat", padx=8, pady=2, cursor="hand2",
+                command=lambda url=preview_url, btn=None: None,  # placeholder
+            )
+            play_btn.config(
+                command=lambda url=preview_url, b=play_btn: self._toggle_preview(url, b),
+            )
+            play_btn.pack(pady=2)
+        elif preview_url:
+            tk.Label(
+                btn_frame, text="(install pygame\nfor preview)",
+                font=("Consolas", 7), fg=TEXT_DIM, bg=row_bg,
+            ).pack()
+
+        spotify_url = rec.get("spotify_url")
+        if spotify_url:
+            tk.Button(
+                btn_frame, text="\u266b Open",
+                font=FONT_SMALL, fg=BG_DARK, bg=NEON_CYAN,
+                activebackground="#00ccdd", activeforeground=BG_DARK,
+                relief="flat", padx=8, pady=2, cursor="hand2",
+                command=lambda url=spotify_url: self._open_spotify_url(url),
+            ).pack(pady=2)
+
+    def _load_album_art(self, url, label, bg_color):
+        """Download album art, resize to 64×64, display in label (bg thread-safe)."""
+        try:
+            data = urllib.request.urlopen(url).read()
+            img = Image.open(BytesIO(data))
+            img = img.resize((64, 64), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            self._preview_art_refs.append(photo)  # prevent GC
+            self.root.after(0, lambda: label.config(image=photo, width=64, height=64))
+        except Exception:
+            self.root.after(
+                0, lambda: label.config(
+                    text="\u266b", font=("Consolas", 18),
+                    fg=TEXT_DIM, width=5, height=2,
+                ),
+            )
+
+    def _toggle_preview(self, url, btn):
+        """Toggle play/stop for a preview URL."""
+        if self._preview_playing:
+            self._stop_preview()
+            btn.config(text="\u25b6 Play", bg=NEON_GREEN)
+        else:
+            # Stop any other playing preview first
+            self._stop_preview()
+            btn.config(text="\u25a0 Stop", bg=NEON_MAGENTA)
+            threading.Thread(
+                target=self._play_preview, args=(url,), daemon=True,
+            ).start()
+
+    def _play_preview(self, url):
+        """Download and play a Spotify preview MP3 via pygame (bg thread)."""
+        try:
+            # Download to temp file
+            tmp = tempfile.NamedTemporaryFile(
+                suffix=".mp3", delete=False, prefix="muud_preview_",
+            )
+            tmp_path = tmp.name
+            tmp.close()
+            urllib.request.urlretrieve(url, tmp_path)
+
+            self._preview_tmp_path = tmp_path
+            self._preview_playing = True
+
+            pygame.mixer.music.load(tmp_path)
+            pygame.mixer.music.play()
+
+            # Wait for playback to finish (or stop signal)
+            while pygame.mixer.music.get_busy() and self._preview_playing:
+                pygame.time.wait(100)
+
+            self._preview_playing = False
+            self.root.after(0, self.status_var.set, "[ PREVIEW ENDED ]")
+        except Exception as exc:
+            self._preview_playing = False
+            self.root.after(
+                0, self.status_var.set, f"[ PREVIEW ERROR: {exc} ]",
+            )
+        finally:
+            self._cleanup_preview_tmp()
+
+    def _stop_preview(self):
+        """Stop any currently playing preview."""
+        self._preview_playing = False
+        if _HAS_PYGAME:
+            try:
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
+        self._cleanup_preview_tmp()
+
+    def _cleanup_preview_tmp(self):
+        """Remove the temporary preview MP3 file."""
+        if self._preview_tmp_path:
+            try:
+                # pygame may hold a file lock briefly on Windows
+                pygame.mixer.music.unload()
+            except Exception:
+                pass
+            try:
+                os.unlink(self._preview_tmp_path)
+            except OSError:
+                pass
+            self._preview_tmp_path = None
+
+    @staticmethod
+    def _open_spotify_url(url):
+        """Open a Spotify URL in the default browser."""
+        import webbrowser
+        webbrowser.open(url)
 
     # ════════════════════════════════════════════════════════════
     #  HELPERS

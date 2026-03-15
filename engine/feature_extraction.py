@@ -30,7 +30,7 @@ def extract_mel(signal, sr):
     mel = librosa.feature.melspectrogram(
         y=segment, sr=sr, n_mels=N_MELS
     )
-    mel = librosa.power_to_db(mel)
+    mel = librosa.power_to_db(mel, ref=np.max)
 
     std = np.std(mel)
     if std != 0:
@@ -61,7 +61,7 @@ def extract_mel_segments(signal, sr, max_segments=5):
             chunk = np.pad(chunk, (0, SAMPLES_PER_SEGMENT - len(chunk)))
 
         mel = librosa.feature.melspectrogram(y=chunk, sr=sr, n_mels=N_MELS)
-        mel = librosa.power_to_db(mel)
+        mel = librosa.power_to_db(mel, ref=np.max)
 
         std = np.std(mel)
         if std != 0:

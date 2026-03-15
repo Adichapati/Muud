@@ -73,7 +73,7 @@ Muud/
 │                                      5 s recording, analysis/recommend/explain panels
 │
 ├── models/                          # Trained model weights (git-ignored except JSON)
-│   ├── genre_fma_cnn.keras          # FMA 10-class genre CNN (git-ignored)
+│   ├── best_genre_crnn.keras        # FMA 10-class genre CRNN (git-ignored)
 │   ├── emotion_hybrid_model.keras   # DEAM hybrid emotion regressor (git-ignored)
 │   └── genre_labels.json            # Genre index → name mapping (tracked)
 │
@@ -142,7 +142,7 @@ Run the training notebooks (see [Training the Models](#training-the-models)).
 
 **Option B — Use pre-trained weights:**
 Place the `.keras` files in `models/`:
-- `models/genre_fma_cnn.keras`
+- `models/best_genre_crnn.keras`
 - `models/emotion_hybrid_model.keras`
 
 ### 5. Launch the app
@@ -204,7 +204,7 @@ Run notebooks from an activated `emotioncnn` environment, or adapt them for **Go
 
 1. `fma_dataset_inspection.ipynb` — downloads & inspects FMA-medium metadata, selects top-10 genres
 2. `fma_genre_clean.ipynb` — cleans genre labels, creates train/val CSV splits
-3. Train the CNN (Colab recommended for GPU) → saves `models/genre_fma_cnn.keras`
+3. Train the CRNN (Kaggle recommended for GPU) → saves `models/best_genre_crnn.keras`
 
 **Genre classes (10):** Classical, Electronic, Experimental, Folk, Hip-Hop, Instrumental, International, Old-Time / Historic, Pop, Rock
 

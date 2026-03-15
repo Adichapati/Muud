@@ -1,6 +1,6 @@
 """genre_classifier.py
 --------------------
-Loads the FMA genre CNN model and provides genre prediction.
+Loads the FMA genre CNN + Transformer model and provides genre prediction.
 Softmax outputs are treated as fuzzy membership degrees.
 Labels are loaded from models/genre_labels.json.
 """
@@ -21,6 +21,17 @@ TARGET_TIME_BINS = 431        # 10-s segment → ceil(220500/512)+1
 DURATION = 30                 # seconds of audio to use
 N_SEGMENTS = 3                # segments per track
 
+# ── Class rebalancing weights (post-prediction) ─────────────────
+# Dampen overrepresented genres, boost underrepresented ones.
+CLASS_WEIGHTS = {
+    "Rock":                0.9,
+    "Electronic":          0.9,
+    "Instrumental":        1.15,
+    "International":       1.15,
+    "Old-Time / Historic": 1.2,
+    "Pop":                 1.1,
+}
+
 
 def _load_labels(json_path: str) -> list[str]:
     """Read genre_labels.json → ordered list of genre strings."""
@@ -30,10 +41,10 @@ def _load_labels(json_path: str) -> list[str]:
 
 
 class GenreClassifier:
-    """FMA-medium genre classifier (10-class CNN on log-mel spectrograms)."""
+    """FMA-medium genre classifier (10-class CNN + Transformer on log-mel spectrograms)."""
 
     def __init__(self, model_path=None, labels_path=None, *,
-                 model=None, labels=None, temperature=1.0):
+                 model=None, labels=None, temperature=1.4):
         """
         Args:
             model_path:  Path to .keras file (loads from disk).
@@ -93,6 +104,7 @@ class GenreClassifier:
         """
         probs = self.model.predict(mel, verbose=0)[0]
         probs = self._apply_temperature(probs)
+        probs = self._apply_class_weights(probs)
         return self._build_result(probs)
 
     def predict_averaged(self, mel_segments):
@@ -111,6 +123,7 @@ class GenreClassifier:
 
         mean_probs = np.mean(all_probs, axis=0)
         mean_probs = self._apply_temperature(mean_probs)
+        mean_probs = self._apply_class_weights(mean_probs)
         return self._build_result(mean_probs)
 
     def predict_averaged_smoothed(self, mel_segments):
@@ -132,6 +145,7 @@ class GenreClassifier:
 
         smoothed = np.mean(list(self._live_prob_history), axis=0)
         smoothed = self._apply_temperature(smoothed)
+        smoothed = self._apply_class_weights(smoothed)
         return self._build_result(smoothed)
 
     def clear_live_history(self):
@@ -215,9 +229,21 @@ class GenreClassifier:
         exp_scaled = np.exp(scaled - np.max(scaled))
         return exp_scaled / exp_scaled.sum()
 
+    def _apply_class_weights(self, probs):
+        """Multiply each genre probability by its class weight and renormalise.
+
+        Genres not listed in CLASS_WEIGHTS keep weight 1.0.
+        """
+        weighted = np.array([
+            p * CLASS_WEIGHTS.get(label, 1.0)
+            for p, label in zip(probs, self.labels)
+        ])
+        total = weighted.sum()
+        return weighted / total if total > 0 else probs
+
     # ── Result builder ──────────────────────────────────────────
 
-    def _build_result(self, probs, hybrid_threshold=0.10):
+    def _build_result(self, probs, hybrid_threshold=0.18):
         """Convert probability vector into the standard result dict.
 
         Returns top-2 predicted genres.  If the gap between them is

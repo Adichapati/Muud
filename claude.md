@@ -1,6 +1,6 @@
 # Muud - Project Context for AI Assistant
 
-## Last Updated: March 10, 2026
+## Last Updated: March 15, 2026
 
 ---
 
@@ -8,7 +8,7 @@
 **Muud** is a hybrid soft-computing music intelligence system that:
 1. Takes audio files (or live mic input) as input
 2. Extracts audio features (Mel spectrograms + handcrafted stats via librosa)
-3. Classifies by **genre** (10-class FMA CNN) and predicts **emotion** (valence/arousal regression)
+3. Classifies by **genre** (10-class FMA CNN + Transformer) and predicts **emotion** (valence/arousal regression)
 4. Fuses genre + emotion via weighted fuzzy scoring
 5. Recommends songs from a CSV database ranked by fused similarity
 6. UI: Retro arcade-themed Tkinter desktop app with live spectrogram, V-A plot, explainability panel
@@ -38,7 +38,8 @@ Muud/
 │   ├── recommender.py           # MusicRecommender — orchestrates analysis + CSV ranking
 │   └── model_registry.py        # Singleton model loader with warm-up
 ├── models/
-│   ├── genre_fma_cnn.keras      # Trained genre CNN (FMA-medium, 10 classes)
+│   ├── best_genre_cnn_trans.keras # Trained genre CNN+Transformer (FMA-medium, 10 classes)
+│   ├── best_genre_crnn.keras    # Previous genre CRNN (superseded by CNN+Transformer)
 │   ├── emotion_hybrid_model.keras  # Trained emotion hybrid model (DEAM)
 │   ├── genre_labels.json        # {0: "Classical", ..., 9: "Rock"}
 │   └── genre_mel_cnn.keras      # Legacy GTZAN model (not used in current app)
@@ -83,7 +84,7 @@ Muud/
 Audio Input (file or live mic @ 22,050 Hz)
     │
     ├─► Genre Pipeline (10-s segments, 431 time bins)
-    │   └─► GenreClassifier (FMA CNN) → softmax → fuzzy memberships
+    │   └─► GenreClassifier (CNN + Transformer) → softmax → fuzzy memberships
     │
     ├─► Emotion Pipeline (3-s segments, ~130 time bins)
     │   ├─► Mel spectrogram (128, 130, 1)
@@ -97,9 +98,12 @@ Audio Input (file or live mic @ 22,050 Hz)
 ---
 
 ## Genre Classifier (`engine/genre_classifier.py`)
-- **Model:** `models/genre_fma_cnn.keras`
-- **Input shape:** `(batch, 128, 431, 1)` — 10-second mel spectrogram
+- **Model:** `models/best_genre_cnn_trans.keras` *(replaces previous `best_genre_crnn.keras`)*
+- **Architecture:** CNN feature extractor → Attention / Transformer block → Dense classification head
+- **Input shape:** `(batch, 128, 431, 1)` — 10-second mel spectrogram *(unchanged from previous model)*
+- **Output:** 10-class softmax
 - **10 Classes:** Classical, Electronic, Experimental, Folk, Hip-Hop, Instrumental, International, Old-Time / Historic, Pop, Rock
+- **Validation accuracy:** ~0.77 *(improved from ~0.69 with previous CRNN)*
 - **Segmentation:** Adaptive based on audio length:
   - ≥ 30s → 3 × 10-second segments
   - 10–30s → as many 10s segments as fit
@@ -162,9 +166,11 @@ Audio Input (file or live mic @ 22,050 Hz)
 ## Datasets
 
 ### FMA-Medium (Genre Training)
+- **Total usable tracks (after cleaning):** ~15,561
 - **CSV:** `data/FMA/fma_medium_genre_clean.csv` — columns: track_id, file_path (Windows paths), genre_label, genre_index (0-9)
 - **Splits:** `fma_medium_train.csv`, `fma_medium_val.csv`
-- **Pre-extracted features:** `data/FMA/features/{X_train,X_val,y_train,y_val}.npy`
+- **Local pre-extracted features:** `data/FMA/features/{X_train,X_val,y_train,y_val}.npy`
+- **Kaggle cached spectrograms:** `/kaggle/working/mel_cache/{X_train,X_val,y_train,y_val}.npy` (~2.7 GB for X_train)
 - **Audio:** `data/FMA/fma_medium/fma_medium/`
 
 ### DEAM (Emotion Training)
@@ -186,7 +192,7 @@ Audio Input (file or live mic @ 22,050 Hz)
 
 | Model | Input | Output |
 |-------|-------|--------|
-| Genre CNN | `(batch, 128, 431, 1)` mel spectrogram | `(batch, 10)` softmax |
+| Genre CNN+Transformer | `(batch, 128, 431, 1)` mel spectrogram | `(batch, 10)` softmax |
 | Emotion Hybrid | `[(batch, 128, T, 1) mel, (batch, 4) stats]` | `(batch, 2)` [V, A] |
 
 ### Genre Mel Extraction (in genre_classifier.py)
@@ -204,12 +210,38 @@ Audio Input (file or live mic @ 22,050 Hz)
 
 ---
 
-## Retraining Plan
-- **Platform:** Kaggle (2× T4 GPUs via MirroredStrategy)
-- **Goal:** Improve accuracy of both genre and emotion models
-- **Scripts location:** `training/kaggle/`
-- **Output:** `.keras` files → download from Kaggle output → copy to `models/` folder
-- **Constraint:** Must preserve I/O shapes so existing inference code works unchanged
+## Genre Model Training Details (CNN + Transformer, March 2026)
+
+- **Platform:** Kaggle Notebook with 2× Tesla T4 GPUs
+- **Why Kaggle:** Local TensorFlow GPU support was unstable
+- **Architecture:** CNN feature extractor → Attention / Transformer block → Dense (10-class softmax)
+- **Training data:** Mel spectrograms precomputed from raw FMA audio and cached as `.npy` files
+- **Audio processing pipeline:**
+  - Sample rate: 22,050 Hz
+  - Segment length: 10 seconds
+  - Mel spectrogram: n_mels=128, n_fft=2048, hop_length=512
+  - Spectrogram → dB conversion → z-score normalization → pad/trim to 431 time bins
+- **Training parameters:**
+  - Epochs: 40 | Batch size: 8 | Optimizer: Adam (lr=1e-4)
+  - Loss: sparse_categorical_crossentropy
+- **Callbacks:** EarlyStopping (patience=8), ReduceLROnPlateau (patience=4, factor=0.5), ModelCheckpoint (save_best_only)
+- **Training speed:** ~50 seconds per epoch (with cached spectrograms)
+- **Results:**
+  - Epoch 1 — train_acc ≈ 0.76, val_acc ≈ 0.76
+  - Best — train_acc ≈ 0.79, val_acc ≈ 0.77
+- **Output checkpoint:** `best_genre_cnn_trans.keras`
+- **Constraint:** I/O shapes preserved (`(batch, 128, 431, 1)` → `(batch, 10)`) so existing inference code works unchanged
+
+---
+
+## Next Steps
+
+1. **Integrate new genre model** into `engine/genre_classifier.py` (load `best_genre_cnn_trans.keras` instead of `best_genre_crnn.keras`)
+2. **Verify inference** works with the new model (input shape must remain 128×431×1)
+3. **Evaluate Experimental genre bias** — check if the new model reduces over-prediction of Experimental
+4. **Improve recommendation scoring** if necessary
+5. **Optionally retrain or fine-tune the emotion model** (DEAM)
+6. **Add Spotify preview playback** to the UI for recommended tracks
 
 ---
 
@@ -218,4 +250,12 @@ Audio Input (file or live mic @ 22,050 Hz)
 - Full codebase scan completed
 - Created comprehensive `claude.md` context file
 - Documented all engine modules, model architectures, data flow, datasets, I/O shapes
-- Ready for Colab training script generation
+- Ready for Kaggle training script generation
+
+### Session 2 — March 15, 2026
+- Genre classifier retrained on Kaggle using FMA-medium dataset
+- Architecture changed from CRNN to CNN + Transformer
+- Mel spectrograms precomputed and cached as `.npy` files for fast training (~50s/epoch)
+- Best validation accuracy improved from ~0.69 to ~0.77
+- New model checkpoint: `best_genre_cnn_trans.keras`
+- `claude.md` updated with new architecture, training details, results, and next steps
