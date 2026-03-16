@@ -1,51 +1,42 @@
 """
 desktop_app.py
 --------------
-Retro arcade-styled Tkinter GUI for Muud — Music Intelligence System.
-Browse audio → Analyze → View genre/emotion → Get recommendations.
-Live mic mode: real-time spectrogram + rolling genre/emotion predictions.
-
-Visual theme: dark navy background, neon accents (cyan / magenta / green),
-pixel-style fonts, 3D raised buttons with hover glow.
+CustomTkinter GUI for Muud — Music Intelligence System.
+Maintains the ORIGINAL retro-arcade theme (dark navy, neon accents)
+but uses modern CustomTkinter for rounded borders and positioning.
 """
-
-import os
-import tempfile
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-import threading
-import urllib.request
+import os, tempfile, tkinter as tk, threading, urllib.request, webbrowser
+from tkinter import filedialog, messagebox
 from collections import deque
 from io import BytesIO
 
+import customtkinter as ctk
 import sounddevice as sd
 import scipy.io.wavfile as wav_io
 import numpy as np
 import librosa
-
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 try:
-    from PIL import Image, ImageTk
+    from PIL import Image, ImageTk, ImageDraw
     _HAS_PIL = True
 except ImportError:
     _HAS_PIL = False
 
 try:
-    import pygame
-    pygame.mixer.init()
-    _HAS_PYGAME = True
+    import pygame; pygame.mixer.init(); _HAS_PYGAME = True
 except Exception:
     _HAS_PYGAME = False
 
 from engine.fusion import emotion_similarity, genre_similarity
 
+ctk.set_appearance_mode("dark")
 
 # ════════════════════════════════════════════════════════════════
-#  COLOUR PALETTE
+#  ORIGINAL COLOUR PALETTE
 # ════════════════════════════════════════════════════════════════
-BG_DARK      = "#0b0e1a"       # deep navy
+BG_DARK      = "#0b0e1a"       # deep navy (base window)
 BG_PANEL     = "#111528"       # slightly lighter panel
 BG_INPUT     = "#181d35"       # input / text area background
 BORDER       = "#1e2444"       # subtle panel borders
@@ -58,7 +49,7 @@ TEXT_PRIMARY  = "#e0e6f0"      # off-white readable text
 TEXT_DIM      = "#6b7394"      # muted secondary text
 
 # ════════════════════════════════════════════════════════════════
-#  FONT STACK
+#  ORIGINAL FONT STACK
 # ════════════════════════════════════════════════════════════════
 FONT_TITLE    = ("Terminal", 24, "bold")
 FONT_SUBTITLE = ("Terminal", 10)
@@ -69,177 +60,59 @@ FONT_STATUS   = ("Consolas", 9)
 FONT_SMALL    = ("Consolas", 9)
 
 
-# ════════════════════════════════════════════════════════════════
-#  NEON BUTTON — custom canvas widget
-# ════════════════════════════════════════════════════════════════
-class NeonButton(tk.Canvas):
-    """
-    A flat canvas-drawn button with:
-      • 3-D raised border illusion (shadow rectangle)
-      • Neon glow outline on hover
-      • Custom colour per button
-    """
-
-    def __init__(self, parent, text, command, color=NEON_CYAN,
-                 width=170, height=40, **kw):
-        super().__init__(parent, width=width, height=height,
-                         bg=BG_DARK, highlightthickness=0, **kw)
-        self.command = command
-        self.color = color
-        self.text = text
-        self.w = width
-        self.h = height
-        self._enabled = True
-
-        self._draw_normal()
-
-        self.bind("<Enter>", self._on_enter)
-        self.bind("<Leave>", self._on_leave)
-        self.bind("<ButtonPress-1>", self._on_press)
-        self.bind("<ButtonRelease-1>", self._on_release)
-
-    # ── Drawing states ──────────────────────────────────────────
-
-    def _draw_normal(self):
-        self.delete("all")
-        # Shadow (3-D raised effect)
-        self.create_rectangle(4, 4, self.w, self.h,
-                              fill="#050810", outline="")
-        # Body
-        self.create_rectangle(0, 0, self.w - 4, self.h - 4,
-                              fill=BG_PANEL, outline=self.color, width=1)
-        self.create_text(
-            (self.w - 4) // 2, (self.h - 4) // 2,
-            text=self.text, fill=self.color if self._enabled else TEXT_DIM,
-            font=FONT_BTN,
-        )
-
-    def _draw_hover(self):
-        self.delete("all")
-        self.create_rectangle(4, 4, self.w, self.h,
-                              fill="#050810", outline="")
-        self.create_rectangle(0, 0, self.w - 4, self.h - 4,
-                              fill="#1a1f3a", outline=self.color, width=2)
-        self.create_text(
-            (self.w - 4) // 2, (self.h - 4) // 2,
-            text=self.text, fill=self.color, font=FONT_BTN,
-        )
-
-    def _draw_pressed(self):
-        self.delete("all")
-        # No shadow — looks "pushed in"
-        self.create_rectangle(2, 2, self.w - 2, self.h - 2,
-                              fill="#0d1020", outline=self.color, width=2)
-        self.create_text(
-            self.w // 2, self.h // 2,
-            text=self.text, fill=NEON_GREEN, font=FONT_BTN,
-        )
-
-    # ── Events ──────────────────────────────────────────────────
-
-    def _on_enter(self, _):
-        if self._enabled:
-            self._draw_hover()
-
-    def _on_leave(self, _):
-        self._draw_normal()
-
-    def _on_press(self, _):
-        if self._enabled:
-            self._draw_pressed()
-
-    def _on_release(self, _):
-        if self._enabled:
-            self._draw_normal()
-            self.command()
-
-    # ── Enable / Disable ────────────────────────────────────────
-
-    def set_enabled(self, flag):
-        self._enabled = flag
-        self._draw_normal()
-
-
-# ════════════════════════════════════════════════════════════════
-#  MAIN APPLICATION
-# ════════════════════════════════════════════════════════════════
 class MuudApp:
-    """Retro arcade-themed desktop application window."""
-
     def __init__(self, recommender):
         self.recommender = recommender
         self.result = None
         self._selected_path = None
-        self._temp_recording = None   # path to current temp WAV (if any)
-
-        # ── Preview playback state ──────────────────────────────
+        self._temp_recording = None
+        
         self._preview_playing = False
-        self._preview_tmp_path = None      # temp file for current preview
-        self._preview_art_refs = []        # keep PhotoImage refs alive
-
-        # ── Live mic state ──────────────────────────────────────
+        self._preview_tmp_path = None
+        self._preview_art_refs = []
+        
         self._live_active = False
-        self._live_stream = None            # sd.InputStream
-        self._live_buffer = deque(maxlen=22050 * 30)  # up to 30 s ring buffer
-        self._live_inference_job = None     # root.after id
-        self._live_spec_job = None          # root.after id for spectrogram refresh
+        self._live_stream = None
+        self._live_buffer = deque(maxlen=22050 * 30)
+        self._live_inference_job = None
+        self._live_spec_job = None
         self._live_sr = 22050
+        
+        self._explain_visible = False
+        self._blink_job = None
+        self._title_color_idx = 0
+        self._title_colors = [NEON_CYAN, "#00ccdd", "#00b3bb", "#009999", "#00b3bb", "#00ccdd"]
 
-        # ── Root window ─────────────────────────────────────────
-        self.root = tk.Tk()
+        # Carousel state
+        self._carousel_recs = []
+        self._carousel_idx = 0
+        self._carousel_auto_job = None
+        self._carousel_art_cache = {}  # idx -> PhotoImage
+        self._carousel_animating = False
+
+        self.root = ctk.CTk()
         self.root.title("MUUD — Music Intelligence")
         self.root.geometry("1350x860")
         self.root.minsize(1200, 750)
-        self.root.configure(bg=BG_DARK)
+        self.root.configure(fg_color=BG_DARK)
 
         self._build_ui()
 
     # ════════════════════════════════════════════════════════════
     #  BUILD UI
     # ════════════════════════════════════════════════════════════
-
     def _build_ui(self):
-        root = self.root
-        # ── ttk Treeview theme ──────────────────────────────
-        style = ttk.Style(root)
-        style.theme_use("clam")
-        style.configure(
-            "Neon.Treeview",
-            background=BG_INPUT,
-            foreground=TEXT_PRIMARY,
-            fieldbackground=BG_INPUT,
-            font=("Consolas", 9),
-            rowheight=28,
-            borderwidth=0,
-        )
-        style.map(
-            "Neon.Treeview",
-            background=[("selected", "#1a2a4a")],
-            foreground=[("selected", NEON_CYAN)],
-        )
-        style.configure(
-            "Neon.Treeview.Heading",
-            background=BG_PANEL,
-            foreground=NEON_CYAN,
-            font=("Consolas", 9, "bold"),
-            borderwidth=1,
-            relief="flat",
-        )
-        style.map(
-            "Neon.Treeview.Heading",
-            background=[("active", "#1a1f3a")],
-        )
-        # ── Top scanline decoration ─────────────────────────────
-        scanline = tk.Canvas(root, height=3, bg=BG_DARK, highlightthickness=0)
+        # Scanline top
+        scanline = tk.Canvas(self.root, height=3, bg=BG_DARK, highlightthickness=0)
         scanline.pack(fill="x")
-        scanline.create_line(0, 1, 2000, 1, fill=NEON_CYAN, width=1)
-
-        # ── Title Block ─────────────────────────────────────────
-        title_frame = tk.Frame(root, bg=BG_DARK)
+        scanline.create_line(0, 1, 3000, 1, fill=NEON_CYAN, width=1)
+        
+        # ── Title Block ──
+        title_frame = tk.Frame(self.root, bg=BG_DARK)
         title_frame.pack(pady=(14, 0))
 
         self._title_label = tk.Label(
-            title_frame, text="\u25c6  M U U D  \u25c6",
+            title_frame, text="◆  M U U D  ◆",
             font=FONT_TITLE, fg=NEON_CYAN, bg=BG_DARK,
         )
         self._title_label.pack()
@@ -247,8 +120,7 @@ class MuudApp:
         sub_frame = tk.Frame(title_frame, bg=BG_DARK)
         sub_frame.pack(pady=(2, 0))
         tk.Label(
-            sub_frame,
-            text="HYBRID  SOFT  COMPUTING  MUSIC  INTELLIGENCE",
+            sub_frame, text="HYBRID  SOFT  COMPUTING  MUSIC  INTELLIGENCE",
             font=FONT_SUBTITLE, fg=TEXT_DIM, bg=BG_DARK,
         ).pack(side="left")
         tk.Label(
@@ -256,230 +128,280 @@ class MuudApp:
             font=("Consolas", 8), fg="#3a4060", bg=BG_DARK,
         ).pack(side="left", padx=(6, 0))
 
-        # Dashed glow line under title
-        glow = tk.Canvas(root, height=5, bg=BG_DARK, highlightthickness=0)
+        glow = tk.Canvas(self.root, height=5, bg=BG_DARK, highlightthickness=0)
         glow.pack(fill="x", padx=60, pady=(6, 0))
-        glow.create_line(0, 2, 2000, 2, fill=NEON_MAGENTA, width=1, dash=(6, 4))
-
-        # Start title pulse animation
-        self._title_colors = [NEON_CYAN, "#00ccdd", "#00b3bb", "#009999",
-                              "#00b3bb", "#00ccdd"]
-        self._title_color_idx = 0
+        glow.create_line(0, 2, 3000, 2, fill=NEON_MAGENTA, width=1, dash=(6, 4))
         self._pulse_title()
 
-        # ── File Selection Panel ────────────────────────────────
-        file_panel = self._make_panel(root, " \u25b8 AUDIO INPUT ")
-        file_panel.pack(fill="x", padx=30, pady=(14, 0))
-
-        file_inner = tk.Frame(file_panel, bg=BG_PANEL)
+        # ── Actions & File ──
+        control_frame = ctk.CTkFrame(self.root, fg_color="transparent")
+        control_frame.pack(fill="x", padx=30, pady=10)
+        
+        file_panel = ctk.CTkFrame(control_frame, fg_color=BG_PANEL, border_color=NEON_CYAN, border_width=1, corner_radius=8)
+        file_panel.pack(fill="x", pady=5)
+        
+        file_inner = ctk.CTkFrame(file_panel, fg_color="transparent")
         file_inner.pack(fill="x", padx=12, pady=10)
-
-        self.file_var = tk.StringVar(value="No file selected \u2026")
-
-        file_label = tk.Label(
-            file_inner, textvariable=self.file_var,
-            font=FONT_BODY, fg=NEON_YELLOW, bg=BG_INPUT,
-            anchor="w", padx=10, pady=6, relief="flat",
-        )
-        file_label.pack(side="left", fill="x", expand=True, padx=(0, 10))
-
-        self.browse_btn = NeonButton(
+        
+        self.file_var = tk.StringVar(value="No file selected …")
+        tk.Label(
+            file_inner, textvariable=self.file_var, font=FONT_BODY,
+            fg=NEON_YELLOW, bg=BG_INPUT, anchor="w", padx=10, pady=6
+        ).pack(side="left", fill="x", expand=True, padx=(0, 10))
+        
+        self.browse_btn = ctk.CTkButton(
             file_inner, text="BROWSE", command=self._browse_file,
-            color=NEON_MAGENTA, width=130, height=34,
+            font=FONT_BTN, fg_color=BG_PANEL, text_color=NEON_MAGENTA,
+            border_color=NEON_MAGENTA, border_width=1, hover_color="#1a1f3a", width=130, height=34
         )
         self.browse_btn.pack(side="right")
-
-        # ── Action Buttons ──────────────────────────────────────
-        btn_frame = tk.Frame(root, bg=BG_DARK)
-        btn_frame.pack(pady=14)
-
-        self.analyze_btn = NeonButton(
-            btn_frame, text="\u26a1 ANALYZE", command=self._run_analyze,
-            color=NEON_CYAN, width=190, height=42,
-        )
-        self.analyze_btn.pack(side="left", padx=12)
-        self.analyze_btn.set_enabled(False)
-
-        self.recommend_btn = NeonButton(
-            btn_frame, text="\u266b RECOMMEND", command=self._run_recommend,
-            color=NEON_GREEN, width=190, height=42,
-        )
-        self.recommend_btn.pack(side="left", padx=12)
-        self.recommend_btn.set_enabled(False)
-
-        self.explain_btn = NeonButton(
-            btn_frame, text="? EXPLAIN", command=self._toggle_explain,
-            color=NEON_YELLOW, width=190, height=42,
-        )
-        self.explain_btn.pack(side="left", padx=12)
-        self.explain_btn.set_enabled(False)
-
-        self.record_btn = NeonButton(
-            btn_frame, text="\u23fa REC 5s", command=self._run_record,
-            color=NEON_MAGENTA, width=190, height=42,
-        )
-        self.record_btn.pack(side="left", padx=12)
-
-        self.live_btn = NeonButton(
-            btn_frame, text="\U0001f3a4 LIVE MIC", command=self._toggle_live_mic,
-            color="#ff6600", width=190, height=42,
-        )
-        self.live_btn.pack(side="left", padx=12)
-
-        self._blink_job = None          # after-id for recording blink
-
-        # ── Status Bar ──────────────────────────────────────────
+        
+        # Action Buttons
+        btn_frame = ctk.CTkFrame(self.root, fg_color="transparent")
+        btn_frame.pack(pady=5)
+        
+        btn_specs = [
+            ("⚡ ANALYZE",   NEON_CYAN,   self._run_analyze,     "analyze_btn"),
+            ("♫ RECOMMEND",  NEON_GREEN,  self._run_recommend,   "recommend_btn"),
+            ("? EXPLAIN",    NEON_YELLOW, self._toggle_explain,  "explain_btn"),
+            ("⏺ REC 5s",    NEON_MAGENTA,self._run_record,      "record_btn"),
+            ("🎤 LIVE MIC",  "#ff6600",   self._toggle_live_mic, "live_btn"),
+        ]
+        
+        for text, col, cmd, attr in btn_specs:
+            b = ctk.CTkButton(
+                btn_frame, text=text, font=FONT_BTN, fg_color=BG_PANEL,
+                text_color=col, border_color=col, border_width=1,
+                hover_color="#1a1f3a", height=40, width=170, command=cmd
+            )
+            b.pack(side="left", padx=10)
+            setattr(self, attr, b)
+            
+        self.analyze_btn.configure(state="disabled")
+        self.recommend_btn.configure(state="disabled")
+        self.explain_btn.configure(state="disabled")
+        
+        # Status Bar
         self.status_var = tk.StringVar(value="[ READY ]")
         tk.Label(
-            root, textvariable=self.status_var,
-            font=FONT_STATUS, fg=NEON_GREEN, bg=BG_DARK, anchor="w",
-        ).pack(padx=34, anchor="w")
-
-        # ── Content Area (results + VA plot side by side) ───────
-        content_frame = tk.Frame(root, bg=BG_DARK)
-        content_frame.pack(fill="both", expand=True, padx=30, pady=(6, 18))
-
-        # Left — Results / Recommendations
-        results_panel = self._make_panel(content_frame, " \u25b8 RESULTS ")
-        results_panel.pack(side="left", fill="both", expand=True, padx=(0, 6))
-
-        results_inner = tk.Frame(results_panel, bg=BG_PANEL)
-        results_inner.pack(fill="both", expand=True, padx=8, pady=8)
-
-        # ── Sub-frame A: Analysis text ───────────────────────
-        self._analysis_frame = tk.Frame(results_inner, bg=BG_PANEL)
-
+            self.root, textvariable=self.status_var,
+            font=FONT_STATUS, fg=NEON_GREEN, bg=BG_DARK, anchor="w"
+        ).pack(padx=34, anchor="w", pady=(5,0))
+        
+        # ── Main Content Split ──
+        content_frame = ctk.CTkFrame(self.root, fg_color="transparent")
+        content_frame.pack(fill="both", expand=True, padx=30, pady=(5, 15))
+        
+        # Left Panel (Results / Recommendations)
+        left_panel = ctk.CTkFrame(content_frame, fg_color=BG_PANEL, border_color=NEON_CYAN, border_width=1, corner_radius=8)
+        left_panel.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        
+        lbl_left = tk.Label(left_panel, text=" ▸ RESULTS ", font=FONT_SMALL, fg=NEON_CYAN, bg=BG_PANEL)
+        lbl_left.place(x=10, y=-8) # simulated LabelFrame logic
+        
+        left_inner = ctk.CTkFrame(left_panel, fg_color="transparent")
+        left_inner.pack(fill="both", expand=True, padx=8, pady=15)
+        
+        # Sub-frames
+        self._analysis_frame = ctk.CTkFrame(left_inner, fg_color="transparent")
         self.results_text = tk.Text(
-            self._analysis_frame, wrap="word",
-            font=FONT_BODY, fg=TEXT_PRIMARY, bg=BG_INPUT,
-            insertbackground=NEON_CYAN,
-            selectbackground="#1a3050",
-            relief="flat", padx=12, pady=10,
-            state="disabled", cursor="arrow",
+            self._analysis_frame, wrap="word", font=FONT_BODY, fg=TEXT_PRIMARY, bg=BG_INPUT,
+            insertbackground=NEON_CYAN, selectbackground="#1a3050", relief="flat", padx=12, pady=10,
+            state="disabled", cursor="arrow"
         )
-
-        a_scroll = tk.Scrollbar(
-            self._analysis_frame, command=self.results_text.yview,
-            bg=BG_PANEL, troughcolor=BG_INPUT,
-            activebackground=NEON_CYAN, width=10,
-        )
+        a_scroll = tk.Scrollbar(self._analysis_frame, command=self.results_text.yview, bg=BG_PANEL, troughcolor=BG_INPUT, activebackground=NEON_CYAN, width=10)
         self.results_text.configure(yscrollcommand=a_scroll.set)
-
         a_scroll.pack(side="right", fill="y")
         self.results_text.pack(side="left", fill="both", expand=True)
-
+        
         self.results_text.tag_configure("heading",   foreground=NEON_CYAN,    font=FONT_BODY_B)
         self.results_text.tag_configure("highlight",  foreground=NEON_MAGENTA)
         self.results_text.tag_configure("value",      foreground=NEON_GREEN)
         self.results_text.tag_configure("dim",        foreground=TEXT_DIM)
         self.results_text.tag_configure("bar",        foreground=NEON_CYAN)
-
+        
         self._analysis_frame.pack(fill="both", expand=True)
-
-        # ── Sub-frame B: Recommendation table ───────────────
-        self._recommend_frame = tk.Frame(results_inner, bg=BG_PANEL)
-        self._build_recommend_table()
-
-        # Right — Valence-Arousal plot / Live spectrogram (stacked)
-        right_frame = tk.Frame(content_frame, bg=BG_DARK, width=380)
-        right_frame.pack(side="right", fill="both", padx=(6, 0))
-        right_frame.pack_propagate(False)
-
-        va_panel = self._make_panel(right_frame, " \u25b8 V\u2013A SPACE ")
-        va_panel.pack(fill="both", expand=True)
-
-        va_inner = tk.Frame(va_panel, bg=BG_PANEL)
-        va_inner.pack(fill="both", expand=True, padx=6, pady=6)
+        
+        self._recommend_frame = ctk.CTkFrame(left_inner, fg_color="transparent")
+        self._build_recommend_area()
+        
+        # Right Panel (V-A Plot / Live Mic / AI Summary)
+        right_panel = ctk.CTkFrame(content_frame, fg_color="transparent", width=420)
+        right_panel.pack(side="right", fill="both", padx=(6, 0))
+        right_panel.pack_propagate(False)
+        
+        va_panel = ctk.CTkFrame(right_panel, fg_color=BG_PANEL, border_color=NEON_CYAN, border_width=1, corner_radius=8)
+        va_panel.pack(fill="x", pady=(0, 10))
+        lbl_va = tk.Label(va_panel, text=" ▸ V-A SPACE ", font=FONT_SMALL, fg=NEON_CYAN, bg=BG_PANEL)
+        lbl_va.place(x=10, y=-8)
+        va_inner = ctk.CTkFrame(va_panel, fg_color="transparent")
+        va_inner.pack(fill="both", expand=True, padx=6, pady=15)
         self._build_va_plot(va_inner)
-
-        # Live spectrogram panel (hidden by default — shown when LIVE MIC active)
-        self._live_panel = self._make_panel(right_frame, " \u25b8 LIVE SPECTROGRAM ")
+        
+        # Replace the live mic panel completely. Make a dynamic panel for LiveMic/Explain in the right.
+        # Actually in the original, Explain was below recommendations, and Live Mic was below VA Plot.
+        self._live_panel = ctk.CTkFrame(right_panel, fg_color=BG_PANEL, border_color=NEON_CYAN, border_width=1, corner_radius=8)
+        lbl_live = tk.Label(self._live_panel, text=" ▸ LIVE SPECTROGRAM ", font=FONT_SMALL, fg=NEON_CYAN, bg=BG_PANEL)
+        lbl_live.place(x=10, y=-8)
         self._live_info_var = tk.StringVar(value="")
-        self._live_info_label = tk.Label(
-            self._live_panel, textvariable=self._live_info_var,
-            font=FONT_SMALL, fg=NEON_GREEN, bg=BG_PANEL, anchor="w", padx=8,
-        )
-        self._live_info_label.pack(fill="x", pady=(4, 0))
-        live_inner = tk.Frame(self._live_panel, bg=BG_PANEL)
+        self._live_info_label = tk.Label(self._live_panel, textvariable=self._live_info_var, font=FONT_SMALL, fg=NEON_GREEN, bg=BG_PANEL, anchor="w", padx=8)
+        self._live_info_label.pack(fill="x", pady=(15, 0))
+        live_inner = ctk.CTkFrame(self._live_panel, fg_color="transparent")
         live_inner.pack(fill="both", expand=True, padx=6, pady=6)
         self._build_live_spectrogram(live_inner)
 
-        # ── Bottom scanline ─────────────────────────────────────
-        bot = tk.Canvas(root, height=3, bg=BG_DARK, highlightthickness=0)
+        # Bottom scanline
+        bot = tk.Canvas(self.root, height=3, bg=BG_DARK, highlightthickness=0)
         bot.pack(fill="x", side="bottom")
-        bot.create_line(0, 1, 2000, 1, fill=NEON_CYAN, width=1)
+        bot.create_line(0, 1, 3000, 1, fill=NEON_CYAN, width=1)
 
-    # ── Panel factory ───────────────────────────────────────────
+    def _build_recommend_area(self):
+        rf = self._recommend_frame
+        self._query_label = tk.Label(rf, text="", font=FONT_SMALL, fg=NEON_YELLOW, bg=BG_INPUT, anchor="w", padx=10, pady=6)
+        self._query_label.pack(fill="x", pady=(0, 4))
 
-    @staticmethod
-    def _make_panel(parent, title_text):
-        """Create a dark framed panel with a neon-outlined border."""
-        outer = tk.LabelFrame(
-            parent, text=title_text,
-            font=FONT_SMALL, fg=NEON_CYAN, bg=BG_PANEL,
-            bd=1, relief="groove", labelanchor="nw",
-            highlightbackground=BORDER,
-            highlightcolor=NEON_CYAN,
-            highlightthickness=1,
+        # ── Hero Carousel Container ──
+        self._hero_frame = ctk.CTkFrame(rf, fg_color=BG_PANEL, border_color=NEON_CYAN, border_width=1, corner_radius=12)
+        self._hero_frame.pack(fill="both", expand=True, pady=(0, 4))
+
+        # Navigation row (arrows + hero card + arrows)
+        nav_row = ctk.CTkFrame(self._hero_frame, fg_color="transparent")
+        nav_row.pack(fill="both", expand=True, padx=8, pady=12)
+
+        # Left arrow
+        self._left_arrow = ctk.CTkButton(
+            nav_row, text="◀", font=("Consolas", 22, "bold"), fg_color="transparent",
+            text_color=NEON_CYAN, hover_color=BG_INPUT, width=44, height=44,
+            corner_radius=22, command=self._carousel_prev
         )
-        return outer
+        self._left_arrow.pack(side="left", padx=(4, 8), pady=20)
+
+        # Center hero content
+        self._hero_content = ctk.CTkFrame(nav_row, fg_color="transparent")
+        self._hero_content.pack(side="left", fill="both", expand=True)
+
+        # Top: circular album art (centered)
+        self._hero_art_frame = ctk.CTkFrame(self._hero_content, fg_color="transparent")
+        self._hero_art_frame.pack(pady=(8, 10))
+        self._hero_art_label = tk.Label(self._hero_art_frame, text="♪", font=("Consolas", 36), fg=TEXT_DIM, bg=BG_PANEL)
+        self._hero_art_label.pack()
+
+        # Song info
+        self._hero_title = tk.Label(self._hero_content, text="", font=("Consolas", 14, "bold"), fg=NEON_GREEN, bg=BG_PANEL, wraplength=380)
+        self._hero_title.pack(pady=(0, 2))
+        self._hero_artist = tk.Label(self._hero_content, text="", font=("Consolas", 11), fg=TEXT_PRIMARY, bg=BG_PANEL)
+        self._hero_artist.pack(pady=(0, 4))
+        self._hero_meta = tk.Label(self._hero_content, text="", font=("Consolas", 9), fg=TEXT_DIM, bg=BG_PANEL)
+        self._hero_meta.pack(pady=(0, 8))
+        
+        # Score + VA bar
+        self._hero_stats = tk.Label(self._hero_content, text="", font=("Consolas", 9), fg=NEON_CYAN, bg=BG_PANEL)
+        self._hero_stats.pack(pady=(0, 8))
+
+        # Action buttons row
+        self._hero_btns = ctk.CTkFrame(self._hero_content, fg_color="transparent")
+        self._hero_btns.pack(pady=(0, 6))
+
+        self._hero_play_btn = ctk.CTkButton(
+            self._hero_btns, text="▶ PLAY", font=FONT_BTN, fg_color=BG_INPUT,
+            text_color=NEON_GREEN, border_color=NEON_GREEN, border_width=1,
+            hover_color="#1a2f1a", height=34, width=120
+        )
+        self._hero_play_btn.pack(side="left", padx=6)
+        self._hero_spotify_btn = ctk.CTkButton(
+            self._hero_btns, text="♫ SPOTIFY", font=FONT_BTN, fg_color=BG_INPUT,
+            text_color=NEON_CYAN, border_color=NEON_CYAN, border_width=1,
+            hover_color="#1a2a3f", height=34, width=120
+        )
+        self._hero_spotify_btn.pack(side="left", padx=6)
+
+        # Right arrow
+        self._right_arrow = ctk.CTkButton(
+            nav_row, text="▶", font=("Consolas", 22, "bold"), fg_color="transparent",
+            text_color=NEON_CYAN, hover_color=BG_INPUT, width=44, height=44,
+            corner_radius=22, command=self._carousel_next
+        )
+        self._right_arrow.pack(side="right", padx=(8, 4), pady=20)
+
+        # Dot indicators row
+        self._dots_frame = ctk.CTkFrame(self._hero_frame, fg_color="transparent", height=24)
+        self._dots_frame.pack(pady=(0, 10))
+        self._dot_labels = []
+
+        # Explain panel (retro style)
+        self._explain_outer = ctk.CTkFrame(rf, fg_color="transparent")
+        self._build_explain_panel()
+
+    def _build_explain_panel(self):
+        ef = self._explain_outer
+        sep = tk.Canvas(ef, height=2, bg=BG_PANEL, highlightthickness=0)
+        sep.pack(fill="x", pady=(6, 0))
+        sep.create_line(0, 1, 3000, 1, fill=NEON_YELLOW, width=1, dash=(4, 3))
+        
+        tk.Label(ef, text=" ▸ EXPLAINABILITY — TOP RECOMMENDATION", font=FONT_SMALL, fg=NEON_YELLOW, bg=BG_PANEL, anchor="w", pady=4).pack(fill="x")
+        
+        self._explain_text = tk.Text(ef, wrap="word", height=18, font=FONT_BODY, fg=TEXT_PRIMARY, bg=BG_INPUT, insertbackground=NEON_CYAN, selectbackground="#1a3050", relief="flat", padx=12, pady=8, state="disabled", cursor="arrow")
+        e_scroll = tk.Scrollbar(ef, command=self._explain_text.yview, bg=BG_PANEL, troughcolor=BG_INPUT, activebackground=NEON_CYAN, width=10)
+        self._explain_text.configure(yscrollcommand=e_scroll.set)
+        e_scroll.pack(side="right", fill="y")
+        self._explain_text.pack(fill="both", expand=True)
+        
+        for tag, fg in [("heading", NEON_CYAN), ("highlight", NEON_MAGENTA), ("value", NEON_GREEN), ("dim", TEXT_DIM), ("formula", NEON_YELLOW), ("bar", NEON_CYAN)]:
+            kw = {"foreground": fg}
+            if tag == "heading": kw["font"] = FONT_BODY_B
+            self._explain_text.tag_configure(tag, **kw)
+
+
+    def _pulse_title(self):
+        color = self._title_colors[self._title_color_idx]
+        self._title_label.config(fg=color)
+        self._title_color_idx = (self._title_color_idx + 1) % len(self._title_colors)
+        self.root.after(600, self._pulse_title)
 
     # ════════════════════════════════════════════════════════════
     #  FILE BROWSE
     # ════════════════════════════════════════════════════════════
-
     def _cleanup_temp(self):
-        """Delete any previous temp recording file and drop its cached analysis."""
         if self._temp_recording:
             self.recommender.invalidate_cache(self._temp_recording)
             if os.path.exists(self._temp_recording):
-                try:
-                    os.unlink(self._temp_recording)
-                except OSError:
-                    pass
+                try: os.unlink(self._temp_recording)
+                except OSError: pass
             self._temp_recording = None
 
     def _browse_file(self):
-        path = filedialog.askopenfilename(
-            title="Select Audio File",
-            filetypes=[
-                ("Audio Files", "*.wav *.mp3 *.flac *.ogg"),
-                ("All Files", "*.*"),
-            ],
-        )
+        path = filedialog.askopenfilename(title="Select Audio File", filetypes=[("Audio Files", "*.wav *.mp3 *.flac *.ogg"), ("All Files", "*.*")])
         if path:
             self._cleanup_temp()
-            self.file_var.set(f"\u266a  {os.path.basename(path)}")
+            self.file_var.set(f"♪  {os.path.basename(path)}")
             self._selected_path = path
-            self.analyze_btn.set_enabled(True)
-            self.recommend_btn.set_enabled(True)
-            self.explain_btn.set_enabled(False)
+            self.analyze_btn.configure(state="normal")
+            self.recommend_btn.configure(state="normal")
+            self.explain_btn.configure(state="disabled")
             if self._explain_visible:
                 self._explain_outer.pack_forget()
                 self._explain_visible = False
-            self.status_var.set("[ FILE LOADED \u2014 SELECT ACTION ]")
+            self.status_var.set("[ FILE LOADED — SELECT ACTION ]")
 
     # ════════════════════════════════════════════════════════════
     #  ANALYSIS
     # ════════════════════════════════════════════════════════════
-
     def _run_analyze(self):
         self._run_in_thread(self._do_analyze)
 
     def _do_analyze(self):
-        self.status_var.set("[ ANALYZING \u2026 ]")
+        self.status_var.set("[ ANALYZING … ]")
         self._disable_buttons()
-
         try:
             result = self.recommender.analyze(self._selected_path)
             self.result = result
-            self._show_analysis(result)
+            self.root.after(0, self._show_analysis, result)
             self.status_var.set("[ ANALYSIS COMPLETE ]")
         except Exception as e:
-            messagebox.showerror("Error", str(e))
+            self.root.after(0, messagebox.showerror, "Error", str(e))
             self.status_var.set("[ ERROR ]")
         finally:
-            self._enable_buttons()
+            self.root.after(0, self._enable_buttons)
 
     def _show_analysis(self, result):
         self._show_analysis_frame()
@@ -490,283 +412,352 @@ class MuudApp:
         t.insert("end", f"  FILE:  ", "dim")
         t.insert("end", f"{result['file']}\n\n", "value")
 
-        # ── Genre ───────────────────────────────────────────────
         g = result["genre"]
-        t.insert("end", "  \u250c\u2500\u2500\u2500 GENRE CLASSIFICATION \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n", "heading")
-        t.insert("end", f"  \u2502  Top Genre:  ", "dim")
+        t.insert("end", "  ┌─── GENRE CLASSIFICATION ──────────────────────────────────────┐\n", "heading")
+        t.insert("end", f"  │  Top Genre:  ", "dim")
         t.insert("end", f"{g['top_genre'].upper()}", "highlight")
         t.insert("end", f"   ({g['confidence']:.1%} confidence)\n", "dim")
-        t.insert("end", "  \u2502\n", "heading")
+        t.insert("end", "  │\n", "heading")
 
-        # ── Top-3 Genre Probabilities ───────────────────────────
         top3 = sorted(g["fuzzy_memberships"].items(), key=lambda x: -x[1])[:3]
-        t.insert("end", "  \u2502  Genre Probabilities:\n", "dim")
+        t.insert("end", "  │  Genre Probabilities:\n", "dim")
         for label, score in top3:
-            t.insert("end", f"  \u2502    {label}", "highlight")
-            t.insert("end", f" \u2014 {score * 100:.1f}%\n", "value")
-        t.insert("end", "  \u2502\n", "heading")
+            t.insert("end", f"  │    {label}", "highlight")
+            t.insert("end", f" — {score * 100:.1f}%\n", "value")
+        t.insert("end", "  │\n", "heading")
 
-        # ── Full Fuzzy Memberships ──────────────────────────────
-        t.insert("end", "  \u2502  Fuzzy Memberships:\n", "dim")
-
+        t.insert("end", "  │  Fuzzy Memberships:\n", "dim")
         for label, score in sorted(g["fuzzy_memberships"].items(), key=lambda x: -x[1]):
             bar_len = int(score * 25)
-            bar = "\u2588" * bar_len + "\u2591" * (25 - bar_len)
-            t.insert("end", f"  \u2502  {label:<10s} ", "dim")
+            bar = "█" * bar_len + "░" * (25 - bar_len)
+            t.insert("end", f"  │  {label:<10s} ", "dim")
             t.insert("end", f"{bar}", "bar")
             t.insert("end", f"  {score:.3f}\n", "value")
+        t.insert("end", "  └─────────────────────────────────────────────────────────────┘\n\n", "heading")
 
-        t.insert("end", "  \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\n", "heading")
-
-        # ── Emotion ─────────────────────────────────────────────
         e = result["emotion"]
-        t.insert("end", "  \u250c\u2500\u2500\u2500 EMOTION ANALYSIS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n", "heading")
-        t.insert("end", f"  \u2502  Valence:  ", "dim")
+        t.insert("end", "  ┌─── EMOTION ANALYSIS ────────────────────────────────────────┐\n", "heading")
+        t.insert("end", f"  │  Valence:  ", "dim")
         t.insert("end", f"{e['valence']:.2f}", "value")
         t.insert("end", f"     Arousal:  ", "dim")
         t.insert("end", f"{e['arousal']:.2f}\n", "value")
-        t.insert("end", f"  \u2502  Mood:     ", "dim")
+        t.insert("end", f"  │  Mood:     ", "dim")
         t.insert("end", f"{e['mood_label']}\n", "highlight")
-        t.insert("end", "  \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n", "heading")
-
+        t.insert("end", "  └─────────────────────────────────────────────────────────────┘\n", "heading")
         t.config(state="disabled")
 
-        # Update V-A scatter plot
         self._update_va_plot(e['valence'], e['arousal'], g['confidence'])
 
     # ════════════════════════════════════════════════════════════
     #  RECOMMENDATION
     # ════════════════════════════════════════════════════════════
-
     def _run_recommend(self):
         self._run_in_thread(self._do_recommend)
 
     def _do_recommend(self):
-        self.status_var.set("[ ANALYZING & RECOMMENDING \u2026 ]")
+        self.status_var.set("[ ANALYZING & RECOMMENDING … ]")
         self._disable_buttons()
-
         try:
-            result = self.recommender.recommend(self._selected_path, top_n=5)
+            result = self.recommender.recommend(self._selected_path, top_n=6)
             self.result = result
-            self._show_recommendations(result)
+            self.root.after(0, self._show_recommendations, result)
             self.status_var.set("[ RECOMMENDATIONS READY ]")
         except Exception as e:
-            messagebox.showerror("Error", str(e))
+            self.root.after(0, messagebox.showerror, "Error", str(e))
             self.status_var.set("[ ERROR ]")
         finally:
-            self._enable_buttons()
+            self.root.after(0, self._enable_buttons)
 
     def _show_recommendations(self, result):
         self._show_recommend_frame()
-
-        # Reset explain panel for fresh results
         if self._explain_visible:
             self._explain_outer.pack_forget()
             self._explain_visible = False
-        self.explain_btn.set_enabled(True)
+        self.explain_btn.configure(state="normal")
 
-        q = result["query"]
-        g = q["genre"]
-        e = q["emotion"]
-
-        # Update query summary ribbon
+        q = result["query"]; g = q["genre"]; e = q["emotion"]
         self._query_label.config(
-            text=(
-                f"  \u266a {q['file']}   \u00b7   "
-                f"Genre: {g['top_genre'].upper()} ({g['confidence']:.0%})   \u00b7   "
-                f"Mood: {e['mood_label']}  (V={e['valence']:.1f}  A={e['arousal']:.1f})"
-            )
+            text=f"  ♪ {q['file']}   ·   Genre: {g['top_genre'].upper()} ({g['confidence']:.0%})   ·   "
+                 f"Mood: {e['mood_label']}  (V={e['valence']:.1f}  A={e['arousal']:.1f})"
         )
-
-        # Clear previous rows
-        for iid in self._rec_tree.get_children():
-            self._rec_tree.delete(iid)
-
-        # Insert recommendations
-        for i, rec in enumerate(result["recommendations"], 1):
-            tag = "top" if i == 1 else "normal"
-            self._rec_tree.insert("", "end", iid=str(i), values=(
-                i,
-                rec["title"],
-                rec["artist"],
-                rec["genre"].upper(),
-                f"{rec['valence']:.2f}",
-                f"{rec['arousal']:.2f}",
-                f"{rec['score']:.4f}",
-            ), tags=(tag,))
-
-        # ── Build card rows with album art + preview buttons ─────
+        self._update_va_plot(e['valence'], e['arousal'], g['confidence'])
         self._build_recommend_cards(result["recommendations"])
 
-        # Reset sort state
-        self._sort_reverse.clear()
-
-        # Update V-A scatter plot
-        self._update_va_plot(e['valence'], e['arousal'], g['confidence'])
-
     # ════════════════════════════════════════════════════════════
-    #  RECOMMENDATION TABLE + UI FRAME HELPERS
+    #  HERO CAROUSEL
     # ════════════════════════════════════════════════════════════
+    def _build_recommend_cards(self, recs):
+        """Populate the hero carousel with recommendation data."""
+        self._stop_preview()
+        self._preview_art_refs.clear()
+        self._carousel_art_cache.clear()
+        self._carousel_recs = list(recs)
+        self._carousel_idx = 0
 
-    def _build_recommend_table(self):
-        """Build the sortable recommendation Treeview inside _recommend_frame."""
-        rf = self._recommend_frame
-
-        # ── Query summary ribbon ────────────────────────────────
-        self._query_label = tk.Label(
-            rf, text="", font=FONT_SMALL,
-            fg=NEON_YELLOW, bg=BG_INPUT, anchor="w",
-            padx=10, pady=6,
-        )
-        self._query_label.pack(fill="x", pady=(0, 6))
-
-        # ── Treeview wrapper ────────────────────────────────────
-        self._tree_frame = tk.Frame(rf, bg=BG_PANEL)
-        self._tree_frame.pack(fill="both", expand=True)
-
-        columns = ("rank", "song", "artist", "genre",
-                   "valence", "arousal", "score")
-        self._rec_tree = ttk.Treeview(
-            self._tree_frame, columns=columns, show="headings",
-            style="Neon.Treeview", selectmode="browse",
-        )
-        self._sort_reverse = {}  # tracks sort direction per column
-
-        col_cfg = {
-            "rank":    ("#",       50,  "center"),
-            "song":    ("Song",    155, "w"),
-            "artist":  ("Artist",  125, "w"),
-            "genre":   ("Genre",   80,  "center"),
-            "valence": ("Val",     60,  "center"),
-            "arousal": ("Aro",     60,  "center"),
-            "score":   ("Fusion",  80,  "center"),
-        }
-        for cid, (heading, width, anchor) in col_cfg.items():
-            self._rec_tree.heading(
-                cid, text=heading,
-                command=lambda c=cid: self._sort_treeview(c),
+        # Rebuild dot indicators
+        for d in self._dot_labels:
+            d.destroy()
+        self._dot_labels.clear()
+        for i in range(len(recs)):
+            dot = tk.Label(
+                self._dots_frame, text="●", font=("Consolas", 12),
+                fg=NEON_CYAN if i == 0 else TEXT_DIM, bg=BG_PANEL, cursor="hand2"
             )
-            self._rec_tree.column(cid, width=width, anchor=anchor, minwidth=35)
+            dot.pack(side="left", padx=4)
+            dot.bind("<Button-1>", lambda e, idx=i: self._carousel_goto(idx))
+            self._dot_labels.append(dot)
 
-        # Row tags
-        self._rec_tree.tag_configure(
-            "top", background="#0f2a18", foreground=NEON_GREEN)
-        self._rec_tree.tag_configure(
-            "normal", foreground=TEXT_PRIMARY)
+        # Pre-fetch all album art in background threads
+        for i, rec in enumerate(recs):
+            if rec.get("album_art") and _HAS_PIL:
+                threading.Thread(target=self._load_carousel_art, args=(i, rec["album_art"]), daemon=True).start()
 
-        # Scrollbar
-        tree_scroll = tk.Scrollbar(
-            self._tree_frame, command=self._rec_tree.yview,
-            bg=BG_PANEL, troughcolor=BG_INPUT,
-            activebackground=NEON_CYAN, width=10,
-        )
-        self._rec_tree.configure(yscrollcommand=tree_scroll.set)
+        # Show first item
+        self._carousel_show(0)
+        self._carousel_auto_start()
 
-        tree_scroll.pack(side="right", fill="y")
-        self._rec_tree.pack(fill="both", expand=True)
+    def _generate_placeholder_art(self, idx, rec):
+        """Create a colorful circular placeholder with the track's initial."""
+        if not _HAS_PIL:
+            return None
+        size = 140
+        # Pick a gradient color based on index
+        hue_palette = [
+            (0, 229, 255),   # cyan
+            (255, 46, 170),  # magenta
+            (57, 255, 20),   # green
+            (255, 230, 0),   # yellow
+            (138, 43, 226),  # violet
+            (255, 100, 50),  # orange
+        ]
+        c1 = hue_palette[idx % len(hue_palette)]
+        c2 = hue_palette[(idx + 2) % len(hue_palette)]
 
-        # ── Explain panel (collapsible, initially hidden) ───────
-        self._explain_visible = False
-        self._explain_outer = tk.Frame(rf, bg=BG_PANEL)
-        self._build_explain_panel()
+        # BG_PANEL is #0B0E14
+        bg_color = (11, 14, 20)
+        img = Image.new("RGB", (size, size), bg_color)
+        draw = ImageDraw.Draw(img)
+        # Draw gradient circle (concentric rings)
+        for r in range(size // 2, 0, -1):
+            t = r / (size // 2)
+            color = tuple(int(c1[j] * t + c2[j] * (1 - t)) for j in range(3))
+            x0, y0 = size // 2 - r, size // 2 - r
+            x1, y1 = size // 2 + r, size // 2 + r
+            draw.ellipse((x0, y0, x1, y1), fill=color)
 
-        # ── Cards container (album art + play buttons) ──────────
-        self._cards_outer = tk.Frame(rf, bg=BG_PANEL)
-        self._cards_canvas = tk.Canvas(
-            self._cards_outer, bg=BG_PANEL, highlightthickness=0,
-        )
-        self._cards_scrollbar = tk.Scrollbar(
-            self._cards_outer, orient="vertical",
-            command=self._cards_canvas.yview,
-            bg=BG_PANEL, troughcolor=BG_INPUT,
-            activebackground=NEON_CYAN, width=10,
-        )
-        self._cards_inner = tk.Frame(self._cards_canvas, bg=BG_PANEL)
-        self._cards_inner.bind(
-            "<Configure>",
-            lambda e: self._cards_canvas.configure(
-                scrollregion=self._cards_canvas.bbox("all")),
-        )
-        self._cards_canvas.create_window(
-            (0, 0), window=self._cards_inner, anchor="nw",
-        )
-        self._cards_canvas.configure(yscrollcommand=self._cards_scrollbar.set)
-        # Mouse wheel scrolling
-        self._cards_canvas.bind_all(
-            "<MouseWheel>",
-            lambda e: self._cards_canvas.yview_scroll(
-                int(-1 * (e.delta / 120)), "units"),
-        )
-
-    def _sort_treeview(self, col):
-        """Sort recommendation table by *col*, toggling direction."""
-        tree = self._rec_tree
-        items = [(tree.set(iid, col), iid) for iid in tree.get_children()]
-        reverse = self._sort_reverse.get(col, False)
+        # Draw the first letter of the track name
+        track_name = rec.get("title") or rec.get("song") or "?"
+        initial = track_name[0].upper() if track_name else "♪"
+        # Draw text centered
         try:
-            items.sort(key=lambda x: float(x[0]), reverse=reverse)
-        except ValueError:
-            items.sort(key=lambda x: x[0].lower(), reverse=reverse)
-        for idx, (_, iid) in enumerate(items):
-            tree.move(iid, "", idx)
-        self._sort_reverse[col] = not reverse
+            from PIL import ImageFont
+            font = ImageFont.truetype("consola.ttf", 48)
+        except Exception:
+            font = ImageFont.load_default()
+        bbox = draw.textbbox((0, 0), initial, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        tx = (size - tw) // 2
+        ty = (size - th) // 2 - 4
+        # Dark shadow then white letter
+        draw.text((tx + 2, ty + 2), initial, fill=(0, 0, 0, 180), font=font)
+        draw.text((tx, ty), initial, fill=(255, 255, 255, 240), font=font)
 
-    # ════════════════════════════════════════════════════════════
-    #  EXPLAINABILITY PANEL
-    # ════════════════════════════════════════════════════════════
+        photo = ImageTk.PhotoImage(img)
+        self._carousel_art_cache[idx] = photo
+        return photo
 
-    def _build_explain_panel(self):
-        """Construct the collapsible explain panel (widgets only, not packed)."""
-        ef = self._explain_outer
+    def _load_carousel_art(self, idx, url):
+        """Download and circularly mask album art for a carousel item."""
+        try:
+            data = urllib.request.urlopen(url, timeout=5).read()
+            img = Image.open(BytesIO(data)).resize((140, 140), Image.LANCZOS)
+            # Create circular mask
+            mask = Image.new("L", (140, 140), 0)
+            draw = ImageDraw.Draw(mask)
+            draw.ellipse((0, 0, 139, 139), fill=255)
+            # Apply mask: paste onto transparent background
+            out = Image.new("RGBA", (140, 140), (0, 0, 0, 0))
+            img = img.convert("RGBA")
+            out.paste(img, (0, 0), mask)
+            photo = ImageTk.PhotoImage(out)
+            self._carousel_art_cache[idx] = photo
+            # If this is the currently displayed item, update it
+            if idx == self._carousel_idx:
+                def update_art():
+                    self._hero_art_label.config(image=photo, text="")
+                    self._hero_art_label.image = photo  # keep reference
+                self.root.after(0, update_art)
+        except Exception:
+            pass
 
-        # Separator line
-        sep = tk.Canvas(ef, height=2, bg=BG_PANEL, highlightthickness=0)
-        sep.pack(fill="x", pady=(6, 0))
-        sep.create_line(0, 1, 3000, 1, fill=NEON_YELLOW, width=1, dash=(4, 3))
-
-        # Header label
-        tk.Label(
-            ef, text=" \u25b8 EXPLAINABILITY \u2014 TOP RECOMMENDATION",
-            font=FONT_SMALL, fg=NEON_YELLOW, bg=BG_PANEL,
-            anchor="w", pady=4,
-        ).pack(fill="x")
-
-        # Scrollable text area
-        self._explain_text = tk.Text(
-            ef, wrap="word", height=18,
-            font=FONT_BODY, fg=TEXT_PRIMARY, bg=BG_INPUT,
-            insertbackground=NEON_CYAN,
-            selectbackground="#1a3050",
-            relief="flat", padx=12, pady=8,
-            state="disabled", cursor="arrow",
-        )
-        e_scroll = tk.Scrollbar(
-            ef, command=self._explain_text.yview,
-            bg=BG_PANEL, troughcolor=BG_INPUT,
-            activebackground=NEON_CYAN, width=10,
-        )
-        self._explain_text.configure(yscrollcommand=e_scroll.set)
-        e_scroll.pack(side="right", fill="y")
-        self._explain_text.pack(fill="both", expand=True)
-
-        # Colour tags (same retro palette)
-        for tag, fg in [
-            ("heading",   NEON_CYAN),
-            ("highlight", NEON_MAGENTA),
-            ("value",     NEON_GREEN),
-            ("dim",       TEXT_DIM),
-            ("formula",   NEON_YELLOW),
-            ("bar",       NEON_CYAN),
-        ]:
-            kw = {"foreground": fg}
-            if tag == "heading":
-                kw["font"] = FONT_BODY_B
-            self._explain_text.tag_configure(tag, **kw)
-
-    def _toggle_explain(self):
-        """Show / hide the explainability panel below the recommendation table."""
-        if not self.result or "recommendations" not in self.result:
+    def _carousel_show(self, idx):
+        """Display recommendation at index `idx` in the hero section."""
+        if not self._carousel_recs:
             return
+        idx = idx % len(self._carousel_recs)
+        self._carousel_idx = idx
+        rec = self._carousel_recs[idx]
+
+        # Update art
+        if idx in self._carousel_art_cache:
+            photo = self._carousel_art_cache[idx]
+            self._hero_art_label.config(image=photo, text="")
+            self._hero_art_label.image = photo
+        else:
+            # Generate placeholder on demand if not loading real art
+            if not rec.get("album_art"):
+                photo = self._generate_placeholder_art(idx, rec)
+                if photo:
+                    self._hero_art_label.config(image=photo, text="")
+                    self._hero_art_label.image = photo
+                else:
+                    self._hero_art_label.config(image="", text="♪")
+            else:
+                self._hero_art_label.config(image="", text="♪")
+
+        # Get title — CSV uses "song", Spotify uses "title"
+        track_title = rec.get("title") or rec.get("song") or "Unknown"
+
+        # Update text
+        rank_label = "★ TOP PICK" if idx == 0 else f"#{idx + 1}"
+        title_color = NEON_GREEN if idx == 0 else NEON_CYAN
+        self._hero_title.config(text=f"{rank_label}  ·  {track_title}", fg=title_color)
+        self._hero_artist.config(text=rec.get("artist", "Unknown"))
+        self._hero_meta.config(text=f"{rec['genre'].upper()}  ·  Score: {rec['score']:.4f}")
+
+        va = f"V={rec['valence']:.1f}   A={rec['arousal']:.1f}"
+        if rec.get("emotion_analyzed"):
+            va += "   ✓ emotion-analyzed"
+        self._hero_stats.config(text=va, fg=NEON_CYAN if rec.get("emotion_analyzed") else TEXT_DIM)
+
+        # Update buttons
+        p_url = rec.get("preview_url")
+        if p_url and _HAS_PYGAME:
+            self._hero_play_btn.configure(
+                state="normal", text="▶ PLAY", text_color=NEON_GREEN, border_color=NEON_GREEN,
+                command=lambda: self._toggle_preview(p_url, self._hero_play_btn)
+            )
+        else:
+            self._hero_play_btn.configure(state="disabled", text="▶ PLAY")
+
+        s_url = rec.get("spotify_url")
+        if s_url:
+            self._hero_spotify_btn.configure(state="normal", command=lambda: webbrowser.open(s_url))
+        else:
+            self._hero_spotify_btn.configure(state="disabled")
+
+        # Update dots
+        for i, dot in enumerate(self._dot_labels):
+            dot.config(fg=NEON_CYAN if i == idx else TEXT_DIM)
+
+    def _carousel_next(self):
+        if self._carousel_recs:
+            self._carousel_auto_stop()
+            new_idx = (self._carousel_idx + 1) % len(self._carousel_recs)
+            self._carousel_animate_to(new_idx)
+            self._carousel_auto_start()
+
+    def _carousel_prev(self):
+        if self._carousel_recs:
+            self._carousel_auto_stop()
+            new_idx = (self._carousel_idx - 1) % len(self._carousel_recs)
+            self._carousel_animate_to(new_idx)
+            self._carousel_auto_start()
+
+    def _carousel_goto(self, idx):
+        if self._carousel_recs:
+            self._carousel_auto_stop()
+            self._carousel_animate_to(idx)
+            self._carousel_auto_start()
+
+    def _carousel_animate_to(self, target_idx):
+        """Fade-out → switch → fade-in animation."""
+        if self._carousel_animating:
+            return
+        self._carousel_animating = True
+        # Quick fade-out via text color dimming
+        self._hero_content.configure(fg_color=BG_PANEL)
+        self.root.after(80, lambda: self._carousel_show(target_idx))
+        self.root.after(160, self._carousel_animation_done)
+
+    def _carousel_animation_done(self):
+        self._carousel_animating = False
+
+    def _carousel_auto_start(self):
+        self._carousel_auto_stop()
+        self._carousel_auto_job = self.root.after(4000, self._carousel_auto_advance)
+
+    def _carousel_auto_stop(self):
+        if self._carousel_auto_job is not None:
+            self.root.after_cancel(self._carousel_auto_job)
+            self._carousel_auto_job = None
+
+    def _carousel_auto_advance(self):
+        if self._carousel_recs and not self._carousel_animating:
+            new_idx = (self._carousel_idx + 1) % len(self._carousel_recs)
+            self._carousel_show(new_idx)
+        self._carousel_auto_job = self.root.after(4000, self._carousel_auto_advance)
+
+    def _load_album_art(self, url, label, size):
+        """Legacy album art loader (non-carousel usage)."""
+        try:
+            data = urllib.request.urlopen(url, timeout=5).read()
+            img = Image.open(BytesIO(data)).resize((size, size), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            self._preview_art_refs.append(photo)
+            self.root.after(0, lambda: label.config(image=photo))
+        except Exception:
+            pass
+
+    # ════════════════════════════════════════════════════════════
+    #  PREVIEW AUDIO
+    # ════════════════════════════════════════════════════════════
+    def _toggle_preview(self, url, btn):
+        if self._preview_playing:
+            self._stop_preview()
+            btn.configure(text="▶ PLAY", text_color=NEON_GREEN, border_color=NEON_GREEN)
+        else:
+            self._stop_preview()
+            btn.configure(text="■ STOP", text_color=NEON_MAGENTA, border_color=NEON_MAGENTA)
+            threading.Thread(target=self._play_preview, args=(url,), daemon=True).start()
+
+    def _play_preview(self, url):
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, prefix="muud_")
+            tmp_path = tmp.name; tmp.close()
+            urllib.request.urlretrieve(url, tmp_path)
+            self._preview_tmp_path = tmp_path
+            self._preview_playing = True
+            pygame.mixer.music.load(tmp_path)
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy() and self._preview_playing:
+                pygame.time.wait(100)
+            self._preview_playing = False
+        except Exception:
+            self._preview_playing = False
+        finally:
+            self._cleanup_preview_tmp()
+
+    def _stop_preview(self):
+        self._preview_playing = False
+        if _HAS_PYGAME:
+            try: pygame.mixer.music.stop()
+            except Exception: pass
+        self._cleanup_preview_tmp()
+
+    def _cleanup_preview_tmp(self):
+        if self._preview_tmp_path:
+            try: pygame.mixer.music.unload()
+            except Exception: pass
+            try: os.unlink(self._preview_tmp_path)
+            except OSError: pass
+            self._preview_tmp_path = None
+
+    # ════════════════════════════════════════════════════════════
+    #  EXPLAINABILITY
+    # ════════════════════════════════════════════════════════════
+    def _toggle_explain(self):
+        if not self.result or "recommendations" not in self.result: return
         if self._explain_visible:
             self._explain_outer.pack_forget()
             self._explain_visible = False
@@ -776,359 +767,86 @@ class MuudApp:
             self._explain_visible = True
 
     def _populate_explain(self):
-        """Compute and render intermediate fusion values for the top hit."""
-        result = self.result
-        q = result["query"]
-        top = result["recommendations"][0]
-
-        g = q["genre"]
-        e = q["emotion"]
-
-        # Re-derive intermediate scores using the same fusion functions
-        g_sim = genre_similarity(
-            g["fuzzy_memberships"], top["genre"].lower()
-        )
-        e_sim = emotion_similarity(
-            (e["valence"], e["arousal"]),
-            (top["valence"], top["arousal"]),
-        )
-        alpha = 0.4
-        beta = 0.6
+        result = self.result; q = result["query"]; top = result["recommendations"][0]
+        g = q["genre"]; e = q["emotion"]
+        g_sim = genre_similarity(g["fuzzy_memberships"], top["genre"].lower())
+        e_sim = emotion_similarity((e["valence"], e["arousal"]), (top["valence"], top["arousal"]))
+        alpha, beta = 0.4, 0.6
         final = alpha * g_sim + beta * e_sim
 
-        t = self._explain_text
-        t.config(state="normal")
-        t.delete("1.0", "end")
-
-        # ── Fusion Formula ──────────────────────────────────────
+        t = self._explain_text; t.config(state="normal"); t.delete("1.0", "end")
         t.insert("end", "  FUSION FORMULA\n", "heading")
-        t.insert("end", "  score = ", "dim")
-        t.insert("end", "\u03b1", "highlight")
-        t.insert("end", " \u00d7 genre_sim  +  ", "dim")
-        t.insert("end", "\u03b2", "highlight")
-        t.insert("end", " \u00d7 emotion_sim\n\n", "dim")
-        t.insert("end", f"  \u03b1 (w_genre)   = ", "dim")
-        t.insert("end", f"{alpha:.2f}\n", "formula")
-        t.insert("end", f"  \u03b2 (w_emotion) = ", "dim")
-        t.insert("end", f"{beta:.2f}\n\n", "formula")
+        t.insert("end", "  score = ", "dim"); t.insert("end", "α", "highlight")
+        t.insert("end", " × genre_sim  +  ", "dim"); t.insert("end", "β", "highlight")
+        t.insert("end", " × emotion_sim\n\n", "dim")
+        t.insert("end", f"  α (w_genre)   = ", "dim"); t.insert("end", f"{alpha:.2f}\n", "formula")
+        t.insert("end", f"  β (w_emotion) = ", "dim"); t.insert("end", f"{beta:.2f}\n\n", "formula")
 
-        # ── Genre Membership Vector ─────────────────────────────
         t.insert("end", "  GENRE MEMBERSHIP VECTOR  (Softmax)\n", "heading")
-        for label, score in sorted(
-            g["fuzzy_memberships"].items(), key=lambda x: -x[1]
-        ):
-            bar_len = int(score * 20)
-            bar = "\u2588" * bar_len + "\u2591" * (20 - bar_len)
-            marker = " \u25c0" if label == top["genre"].lower() else ""
-            t.insert("end", f"  {label:<10s} ", "dim")
-            t.insert("end", f"{bar}", "bar")
-            t.insert("end", f"  {score:.4f}", "value")
-            if marker:
-                t.insert("end", marker, "highlight")
+        for label, score in sorted(g["fuzzy_memberships"].items(), key=lambda x: -x[1]):
+            bar_len = int(score * 20); bar = "█" * bar_len + "░" * (20 - bar_len)
+            marker = " ◀" if label == top["genre"].lower() else ""
+            t.insert("end", f"  {label:<10s} ", "dim"); t.insert("end", f"{bar}", "bar"); t.insert("end", f"  {score:.4f}", "value")
+            if marker: t.insert("end", marker, "highlight")
             t.insert("end", "\n")
 
-        # ── Top Match Breakdown ─────────────────────────────────
-        t.insert("end", "\n")
-        t.insert("end", f"  TOP MATCH BREAKDOWN\n", "heading")
-        t.insert("end", f"  \"{top['title']}\"", "value")
-        t.insert("end", f"  by {top['artist']}", "dim")
-        t.insert("end", f"  \u00b7  {top['genre'].upper()}\n\n", "highlight")
-
-        t.insert("end", "  Genre Similarity\n", "highlight")
-        t.insert("end", f"    genre_sim(\"{top['genre']}\") = ", "dim")
-        t.insert("end", f"{g_sim:.4f}\n\n", "value")
-
-        t.insert("end", "  Emotion Similarity\n", "highlight")
-        t.insert("end", f"    query  = (V={e['valence']:.2f}, A={e['arousal']:.2f})\n", "dim")
+        t.insert("end", "\n"); t.insert("end", f"  TOP MATCH BREAKDOWN\n", "heading")
+        t.insert("end", f"  \"{top['title']}\"", "value"); t.insert("end", f"  by {top['artist']}", "dim")
+        t.insert("end", f"  ·  {top['genre'].upper()}\n\n", "highlight")
+        t.insert("end", "  Genre Similarity\n", "highlight"); t.insert("end", f"    genre_sim(\"{top['genre']}\") = ", "dim"); t.insert("end", f"{g_sim:.4f}\n\n", "value")
+        t.insert("end", "  Emotion Similarity\n", "highlight"); t.insert("end", f"    query  = (V={e['valence']:.2f}, A={e['arousal']:.2f})\n", "dim")
         t.insert("end", f"    match  = (V={top['valence']:.2f}, A={top['arousal']:.2f})\n", "dim")
-        t.insert("end", f"    emo_sim = ", "dim")
-        t.insert("end", f"{e_sim:.4f}\n\n", "value")
-
-        # ── Final Computation ───────────────────────────────────
+        t.insert("end", f"    emo_sim = ", "dim"); t.insert("end", f"{e_sim:.4f}\n\n", "value")
         t.insert("end", "  FUSION COMPUTATION\n", "heading")
-        t.insert("end", f"    {alpha:.2f}", "formula")
-        t.insert("end", f" \u00d7 {g_sim:.4f}", "value")
-        t.insert("end", f"  +  ", "dim")
-        t.insert("end", f"{beta:.2f}", "formula")
-        t.insert("end", f" \u00d7 {e_sim:.4f}", "value")
-        t.insert("end", f"\n    = ", "dim")
-        t.insert("end", f"{final:.4f}\n", "value")
-
+        t.insert("end", f"    {alpha:.2f}", "formula"); t.insert("end", f" × {g_sim:.4f}", "value"); t.insert("end", f"  +  ", "dim")
+        t.insert("end", f"{beta:.2f}", "formula"); t.insert("end", f" × {e_sim:.4f}", "value"); t.insert("end", f"\n    = ", "dim"); t.insert("end", f"{final:.4f}\n", "value")
         t.config(state="disabled")
 
+    # ════════════════════════════════════════════════════════════
+    #  FRAME SWITCHING
+    # ════════════════════════════════════════════════════════════
     def _show_analysis_frame(self):
-        """Switch the left panel to show the analysis text output."""
         self._recommend_frame.pack_forget()
         self._analysis_frame.pack(fill="both", expand=True)
-        self.explain_btn.set_enabled(False)
+        self.explain_btn.configure(state="disabled")
         self._explain_visible = False
 
     def _show_recommend_frame(self):
-        """Switch the left panel to show the recommendation table."""
         self._analysis_frame.pack_forget()
         self._recommend_frame.pack(fill="both", expand=True)
 
     # ════════════════════════════════════════════════════════════
-    #  SPOTIFY PREVIEW PLAYBACK + ALBUM ART CARDS
+    #  V-A PLOT (Original Styling, Large Size)
     # ════════════════════════════════════════════════════════════
-
-    def _build_recommend_cards(self, recommendations):
-        """Populate card rows with album art thumbnails and ▶ play buttons."""
-        # Stop any playing preview
-        self._stop_preview()
-
-        # Clear old cards
-        for w in self._cards_inner.winfo_children():
-            w.destroy()
-        self._preview_art_refs.clear()
-
-        has_any_preview = any(r.get("preview_url") for r in recommendations)
-        if not has_any_preview and not any(r.get("album_art") for r in recommendations):
-            # No Spotify data — hide card panel
-            self._cards_outer.pack_forget()
-            return
-
-        # Show card panel below the treeview
-        self._cards_outer.pack(fill="both", expand=True, pady=(6, 0))
-        self._cards_scrollbar.pack(side="right", fill="y")
-        self._cards_canvas.pack(side="left", fill="both", expand=True)
-
-        for i, rec in enumerate(recommendations):
-            self._create_card_row(i, rec)
-
-    def _create_card_row(self, index, rec):
-        """Create a single recommendation card with art + info + play button."""
-        row_bg = "#0f2a18" if index == 0 else BG_INPUT
-        row = tk.Frame(self._cards_inner, bg=row_bg, pady=4, padx=6)
-        row.pack(fill="x", pady=2, padx=4)
-
-        # ── Album art (64×64) ────────────────────────────────────
-        art_url = rec.get("album_art")
-        art_label = tk.Label(row, bg=row_bg, width=64, height=64)
-        art_label.pack(side="left", padx=(0, 8))
-
-        if art_url and _HAS_PIL:
-            # Download and resize in background thread
-            threading.Thread(
-                target=self._load_album_art,
-                args=(art_url, art_label, row_bg),
-                daemon=True,
-            ).start()
-        else:
-            art_label.config(
-                text="\u266b", font=("Consolas", 18),
-                fg=TEXT_DIM, width=5, height=2,
-            )
-
-        # ── Track info ──────────────────────────────────────────
-        info_frame = tk.Frame(row, bg=row_bg)
-        info_frame.pack(side="left", fill="x", expand=True)
-
-        title_color = NEON_GREEN if index == 0 else TEXT_PRIMARY
-        tk.Label(
-            info_frame,
-            text=f"{index + 1}. {rec['title']}",
-            font=FONT_BODY_B, fg=title_color, bg=row_bg,
-            anchor="w",
-        ).pack(fill="x")
-
-        tk.Label(
-            info_frame,
-            text=f"{rec['artist']}  \u00b7  {rec['genre'].upper()}  \u00b7  Score: {rec['score']:.4f}",
-            font=FONT_SMALL, fg=TEXT_DIM, bg=row_bg,
-            anchor="w",
-        ).pack(fill="x")
-
-        # V/A and emotion status
-        va_text = f"V={rec['valence']:.1f}  A={rec['arousal']:.1f}"
-        analyzed = rec.get("emotion_analyzed", False)
-        if analyzed:
-            va_text += "  \u2713 emotion analyzed"
-        tk.Label(
-            info_frame, text=va_text,
-            font=("Consolas", 8), fg=NEON_CYAN if analyzed else TEXT_DIM,
-            bg=row_bg, anchor="w",
-        ).pack(fill="x")
-
-        # ── Play / Open buttons ──────────────────────────────────
-        btn_frame = tk.Frame(row, bg=row_bg)
-        btn_frame.pack(side="right", padx=(8, 0))
-
-        preview_url = rec.get("preview_url")
-        if preview_url and _HAS_PYGAME:
-            play_btn = tk.Button(
-                btn_frame, text="\u25b6 Play",
-                font=FONT_SMALL, fg=BG_DARK, bg=NEON_GREEN,
-                activebackground="#2ecc40", activeforeground=BG_DARK,
-                relief="flat", padx=8, pady=2, cursor="hand2",
-                command=lambda url=preview_url, btn=None: None,  # placeholder
-            )
-            play_btn.config(
-                command=lambda url=preview_url, b=play_btn: self._toggle_preview(url, b),
-            )
-            play_btn.pack(pady=2)
-        elif preview_url:
-            tk.Label(
-                btn_frame, text="(install pygame\nfor preview)",
-                font=("Consolas", 7), fg=TEXT_DIM, bg=row_bg,
-            ).pack()
-
-        spotify_url = rec.get("spotify_url")
-        if spotify_url:
-            tk.Button(
-                btn_frame, text="\u266b Open",
-                font=FONT_SMALL, fg=BG_DARK, bg=NEON_CYAN,
-                activebackground="#00ccdd", activeforeground=BG_DARK,
-                relief="flat", padx=8, pady=2, cursor="hand2",
-                command=lambda url=spotify_url: self._open_spotify_url(url),
-            ).pack(pady=2)
-
-    def _load_album_art(self, url, label, bg_color):
-        """Download album art, resize to 64×64, display in label (bg thread-safe)."""
-        try:
-            data = urllib.request.urlopen(url).read()
-            img = Image.open(BytesIO(data))
-            img = img.resize((64, 64), Image.LANCZOS)
-            photo = ImageTk.PhotoImage(img)
-            self._preview_art_refs.append(photo)  # prevent GC
-            self.root.after(0, lambda: label.config(image=photo, width=64, height=64))
-        except Exception:
-            self.root.after(
-                0, lambda: label.config(
-                    text="\u266b", font=("Consolas", 18),
-                    fg=TEXT_DIM, width=5, height=2,
-                ),
-            )
-
-    def _toggle_preview(self, url, btn):
-        """Toggle play/stop for a preview URL."""
-        if self._preview_playing:
-            self._stop_preview()
-            btn.config(text="\u25b6 Play", bg=NEON_GREEN)
-        else:
-            # Stop any other playing preview first
-            self._stop_preview()
-            btn.config(text="\u25a0 Stop", bg=NEON_MAGENTA)
-            threading.Thread(
-                target=self._play_preview, args=(url,), daemon=True,
-            ).start()
-
-    def _play_preview(self, url):
-        """Download and play a Spotify preview MP3 via pygame (bg thread)."""
-        try:
-            # Download to temp file
-            tmp = tempfile.NamedTemporaryFile(
-                suffix=".mp3", delete=False, prefix="muud_preview_",
-            )
-            tmp_path = tmp.name
-            tmp.close()
-            urllib.request.urlretrieve(url, tmp_path)
-
-            self._preview_tmp_path = tmp_path
-            self._preview_playing = True
-
-            pygame.mixer.music.load(tmp_path)
-            pygame.mixer.music.play()
-
-            # Wait for playback to finish (or stop signal)
-            while pygame.mixer.music.get_busy() and self._preview_playing:
-                pygame.time.wait(100)
-
-            self._preview_playing = False
-            self.root.after(0, self.status_var.set, "[ PREVIEW ENDED ]")
-        except Exception as exc:
-            self._preview_playing = False
-            self.root.after(
-                0, self.status_var.set, f"[ PREVIEW ERROR: {exc} ]",
-            )
-        finally:
-            self._cleanup_preview_tmp()
-
-    def _stop_preview(self):
-        """Stop any currently playing preview."""
-        self._preview_playing = False
-        if _HAS_PYGAME:
-            try:
-                pygame.mixer.music.stop()
-            except Exception:
-                pass
-        self._cleanup_preview_tmp()
-
-    def _cleanup_preview_tmp(self):
-        """Remove the temporary preview MP3 file."""
-        if self._preview_tmp_path:
-            try:
-                # pygame may hold a file lock briefly on Windows
-                pygame.mixer.music.unload()
-            except Exception:
-                pass
-            try:
-                os.unlink(self._preview_tmp_path)
-            except OSError:
-                pass
-            self._preview_tmp_path = None
-
-    @staticmethod
-    def _open_spotify_url(url):
-        """Open a Spotify URL in the default browser."""
-        import webbrowser
-        webbrowser.open(url)
-
-    # ════════════════════════════════════════════════════════════
-    #  HELPERS
-    # ════════════════════════════════════════════════════════════
-
-    def _pulse_title(self):
-        """Subtle colour-cycling animation on the title label."""
-        color = self._title_colors[self._title_color_idx]
-        self._title_label.config(fg=color)
-        self._title_color_idx = (self._title_color_idx + 1) % len(self._title_colors)
-        self.root.after(600, self._pulse_title)
-
-    # ════════════════════════════════════════════════════════════
-    #  VALENCE-AROUSAL PLOT
-    # ════════════════════════════════════════════════════════════
-
     def _build_va_plot(self, parent):
-        """Create the retro-styled Valence-Arousal 2D scatter plot."""
-        fig = Figure(figsize=(3.6, 3.4), dpi=96, facecolor=BG_DARK)
+        fig = Figure(figsize=(4.2, 4.0), dpi=96, facecolor=BG_PANEL)
         ax = fig.add_subplot(111)
-
         ax.set_facecolor(BG_INPUT)
         ax.set_xlim(1, 9)
         ax.set_ylim(1, 9)
-        ax.set_xlabel("Valence \u2192", color=NEON_CYAN, fontsize=9,
-                      fontfamily="Consolas")
-        ax.set_ylabel("Arousal \u2192", color=NEON_CYAN, fontsize=9,
-                      fontfamily="Consolas")
+        ax.set_xlabel("Valence →", color=NEON_CYAN, fontsize=9, fontfamily="Consolas")
+        ax.set_ylabel("Arousal →", color=NEON_CYAN, fontsize=9, fontfamily="Consolas")
         ax.set_xticks(range(1, 10))
         ax.set_yticks(range(1, 10))
 
-        # Neon grid
         ax.grid(True, color=BORDER, linewidth=0.5, alpha=0.6)
-        ax.axhline(y=5, color=NEON_CYAN, linewidth=0.8, alpha=0.35,
-                   linestyle="--")
-        ax.axvline(x=5, color=NEON_CYAN, linewidth=0.8, alpha=0.35,
-                   linestyle="--")
+        ax.axhline(y=5, color=NEON_CYAN, linewidth=0.8, alpha=0.35, linestyle="--")
+        ax.axvline(x=5, color=NEON_CYAN, linewidth=0.8, alpha=0.35, linestyle="--")
 
-        # Tick & spine styling
         ax.tick_params(colors=TEXT_DIM, labelsize=7)
         for spine in ax.spines.values():
             spine.set_color(BORDER)
 
-        # Quadrant labels
-        kw = dict(fontsize=8, fontfamily="Consolas", alpha=0.55,
-                  ha="center", va="center", weight="bold")
-        ax.text(7, 7, "Happy /\nEnergetic", color=NEON_GREEN,   **kw)  # Q1
-        ax.text(7, 3, "Happy /\nCalm",      color=NEON_CYAN,    **kw)  # Q2
-        ax.text(3, 3, "Sad /\nCalm",        color=NEON_MAGENTA, **kw)  # Q3
-        ax.text(3, 7, "Angry /\nIntense",   color=NEON_YELLOW,  **kw)  # Q4
-
+        kw = dict(fontsize=8, fontfamily="Consolas", alpha=0.55, ha="center", va="center", weight="bold")
+        ax.text(7, 7, "Happy /\nEnergetic", color=NEON_GREEN,   **kw)
+        ax.text(7, 3, "Happy /\nCalm",      color=NEON_CYAN,    **kw)
+        ax.text(3, 3, "Sad /\nCalm",        color=NEON_MAGENTA, **kw)
+        ax.text(3, 7, "Angry /\nIntense",   color=NEON_YELLOW,  **kw)
         fig.tight_layout(pad=1.5)
 
         self._va_fig = fig
         self._va_ax = ax
-        self._va_artists = []  # mutable list for previous-dot cleanup
+        self._va_artists = []
 
         canvas = FigureCanvasTkAgg(fig, master=parent)
         canvas.draw()
@@ -1136,356 +854,182 @@ class MuudApp:
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
     def _update_va_plot(self, valence, arousal, confidence=0.5):
-        """Plot (or re-plot) the current song as a confidence-scaled dot.
-
-        Marker size scales with *confidence* (genre prediction strength)
-        so that high-confidence predictions appear visually stronger.
-        """
         ax = self._va_ax
-        conf = max(0.1, min(float(confidence), 1.0))  # clamp to [0.1, 1.0]
+        conf = max(0.1, min(float(confidence), 1.0))
 
-        # Remove previous dot artists
         for art in self._va_artists:
             art.remove()
         self._va_artists.clear()
 
-        # Sizes scale with confidence: base × confidence
         core_size = 200 * conf
-
-        # Glow layers (large → small, increasing alpha)
         for scale, alpha in [(4.0, 0.08), (2.5, 0.16), (1.6, 0.28)]:
-            d = ax.scatter(valence, arousal, s=core_size * scale,
-                           c=NEON_MAGENTA, alpha=alpha * conf,
-                           zorder=5, edgecolors="none")
+            d = ax.scatter(valence, arousal, s=core_size * scale, c=NEON_MAGENTA, alpha=alpha * conf, zorder=5, edgecolors="none")
             self._va_artists.append(d)
 
-        # Core dot
-        d = ax.scatter(valence, arousal, s=core_size, c=NEON_MAGENTA,
-                       alpha=0.5 + 0.45 * conf,
-                       zorder=6, edgecolors=NEON_CYAN, linewidths=1.2)
+        d = ax.scatter(valence, arousal, s=core_size, c=NEON_MAGENTA, alpha=0.5 + 0.45 * conf, zorder=6, edgecolors=NEON_CYAN, linewidths=1.2)
         self._va_artists.append(d)
 
-        # Coordinate label
-        lbl = ax.annotate(
-            f"({valence:.1f}, {arousal:.1f})  {conf:.0%}",
-            (valence, arousal),
-            textcoords="offset points", xytext=(12, 10),
-            fontsize=8, fontfamily="Consolas",
-            color=NEON_GREEN, alpha=0.9,
-            arrowprops=dict(arrowstyle="->", color=TEXT_DIM, lw=0.7),
-        )
+        lbl = ax.annotate(f"({valence:.1f}, {arousal:.1f})  {conf:.0%}", (valence, arousal), textcoords="offset points", xytext=(12, 10), fontsize=8, fontfamily="Consolas", color=NEON_GREEN, alpha=0.9, arrowprops=dict(arrowstyle="->", color=TEXT_DIM, lw=0.7))
         self._va_artists.append(lbl)
-
         self._va_canvas.draw_idle()
 
+    # ════════════════════════════════════════════════════════════
+    #  HELPERS
+    # ════════════════════════════════════════════════════════════
     def _clear_results(self):
         self.results_text.config(state="normal")
         self.results_text.delete("1.0", "end")
         self.results_text.config(state="disabled")
-        # Also clear recommendation table
-        for iid in self._rec_tree.get_children():
-            self._rec_tree.delete(iid)
-
-    def _set_results(self, text):
-        """Plain-text fallback (no colour tags)."""
-        self.results_text.config(state="normal")
-        self.results_text.delete("1.0", "end")
-        self.results_text.insert("1.0", text)
-        self.results_text.config(state="disabled")
 
     def _disable_buttons(self):
-        self.analyze_btn.set_enabled(False)
-        self.recommend_btn.set_enabled(False)
-        self.explain_btn.set_enabled(False)
-        self.record_btn.set_enabled(False)
-        self.live_btn.set_enabled(False)
+        for attr in ("analyze_btn", "recommend_btn", "explain_btn", "record_btn", "live_btn"): getattr(self, attr).configure(state="disabled")
 
     def _enable_buttons(self):
-        self.analyze_btn.set_enabled(True)
-        self.recommend_btn.set_enabled(True)
-        self.record_btn.set_enabled(True)
-        self.live_btn.set_enabled(True)
+        for attr in ("analyze_btn", "recommend_btn", "record_btn", "live_btn"): getattr(self, attr).configure(state="normal")
 
     def _run_in_thread(self, target):
-        """Run a function in a background thread to keep UI responsive."""
-        thread = threading.Thread(target=target, daemon=True)
-        thread.start()
+        threading.Thread(target=target, daemon=True).start()
 
     # ════════════════════════════════════════════════════════════
     #  MICROPHONE RECORDING
     # ════════════════════════════════════════════════════════════
-
     def _run_record(self):
         self._run_in_thread(self._do_record)
 
     def _do_record(self):
-        """Record 5 s from the default mic, save temp WAV, auto-analyze."""
-        SR = 22050
-        DURATION = 5
-        self._disable_buttons()
-        self._cleanup_temp()           # remove previous temp recording
-        self._blink_on = True
-        self._blink_recording()
-
+        SR = 22050; DURATION = 5
+        self._disable_buttons(); self._cleanup_temp(); self._blink_on = True; self._blink_recording()
         try:
-            audio = sd.rec(
-                int(DURATION * SR), samplerate=SR, channels=1, dtype="float32",
-            )
-            sd.wait()  # block until recording finishes
-
-            # Write to a temporary WAV file
-            tmp = tempfile.NamedTemporaryFile(
-                suffix=".wav", delete=False, prefix="muud_rec_",
-            )
-            tmp_path = tmp.name
-            tmp.close()
+            audio = sd.rec(int(DURATION * SR), samplerate=SR, channels=1, dtype="float32")
+            sd.wait()
+            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False, prefix="muud_rec_")
+            tmp_path = tmp.name; tmp.close()
             wav_io.write(tmp_path, SR, audio)
-
-            # Keep track so it can be cleaned up later
             self._temp_recording = tmp_path
-
-            # Update UI path display
-            self.file_var.set("\u266a  [mic recording]")
+            self.file_var.set("♪  [mic recording]")
             self._selected_path = tmp_path
-
-            # Stop blink, show analysing status
-            self._stop_blink()
-            self.status_var.set("[ ANALYZING RECORDING \u2026 ]")
-
-            # Reuse the normal analysis pipeline
+            self._stop_blink(); self.status_var.set("[ ANALYZING RECORDING … ]")
             result = self.recommender.analyze(tmp_path)
             self.result = result
             self._show_analysis(result)
             self.status_var.set("[ RECORDING ANALYSIS COMPLETE ]")
-
         except Exception as e:
-            self._stop_blink()
-            messagebox.showerror("Recording Error", str(e))
-            self.status_var.set("[ RECORDING ERROR ]")
+            self._stop_blink(); messagebox.showerror("Recording Error", str(e)); self.status_var.set("[ RECORDING ERROR ]")
         finally:
-            self._enable_buttons()
-            self.explain_btn.set_enabled(True)
+            self._enable_buttons(); self.explain_btn.configure(state="normal")
 
     def _blink_recording(self):
-        """Toggle a red blinking \u25cf RECORDING indicator on the status bar."""
-        if not self._blink_on:
-            return
+        if not self._blink_on: return
         current = self.status_var.get()
-        if "\u25cf" in current:
-            self.status_var.set("[   RECORDING \u2026 ]")
-        else:
-            self.status_var.set("[ \u25cf RECORDING \u2026 ]")
+        if "●" in current: self.status_var.set("[   RECORDING … ]")
+        else: self.status_var.set("[ ● RECORDING … ]")
         self._blink_job = self.root.after(500, self._blink_recording)
 
     def _stop_blink(self):
-        """Cancel the blink loop."""
         self._blink_on = False
         if self._blink_job is not None:
-            self.root.after_cancel(self._blink_job)
-            self._blink_job = None
+            self.root.after_cancel(self._blink_job); self._blink_job = None
 
     # ════════════════════════════════════════════════════════════
-    #  LIVE MICROPHONE — spectrogram + rolling inference
+    #  LIVE MICROPHONE 
     # ════════════════════════════════════════════════════════════
-
     def _build_live_spectrogram(self, parent):
-        """Create the live mel-spectrogram plot (hidden until activated)."""
-        fig = Figure(figsize=(3.9, 2.8), dpi=96, facecolor=BG_DARK)
+        fig = Figure(figsize=(4.2, 3.2), dpi=96, facecolor=BG_PANEL)
         ax = fig.add_subplot(111)
-
         ax.set_facecolor(BG_INPUT)
-        ax.set_xlabel("Time (frames)", color=NEON_CYAN, fontsize=8,
-                       fontfamily="Consolas")
-        ax.set_ylabel("Mel bin", color=NEON_CYAN, fontsize=8,
-                       fontfamily="Consolas")
+        ax.set_xlabel("Time (frames)", color=NEON_CYAN, fontsize=8, fontfamily="Consolas")
+        ax.set_ylabel("Mel bin", color=NEON_CYAN, fontsize=8, fontfamily="Consolas")
         ax.tick_params(colors=TEXT_DIM, labelsize=7)
-        for spine in ax.spines.values():
-            spine.set_color(BORDER)
-
-        # Initialise with blank image (128 mel bins × 200 time frames)
+        for spine in ax.spines.values(): spine.set_color(BORDER)
         self._live_spec_data = np.zeros((128, 200), dtype=np.float32)
-        self._live_im = ax.imshow(
-            self._live_spec_data, aspect="auto", origin="lower",
-            cmap="magma", vmin=-3, vmax=3,
-            interpolation="nearest",
-        )
+        self._live_im = ax.imshow(self._live_spec_data, aspect="auto", origin="lower", cmap="magma", vmin=-3, vmax=3, interpolation="nearest")
         fig.tight_layout(pad=1.0)
-
-        self._live_fig = fig
-        self._live_ax = ax
+        self._live_fig = fig; self._live_ax = ax
         self._live_canvas = FigureCanvasTkAgg(fig, master=parent)
         self._live_canvas.draw()
         self._live_canvas.get_tk_widget().pack(fill="both", expand=True)
 
     def _toggle_live_mic(self):
-        """Start / stop the live microphone stream."""
-        if self._live_active:
-            self._stop_live_mic()
-        else:
-            self._start_live_mic()
+        if self._live_active: self._stop_live_mic()
+        else: self._start_live_mic()
 
     def _start_live_mic(self):
-        """Open mic stream, show spectrogram panel, begin updates."""
-        self._live_active = True
-        self._live_buffer.clear()
+        self._live_active = True; self._live_buffer.clear()
         self._live_spec_data = np.zeros((128, 200), dtype=np.float32)
         self.recommender.genre_clf.clear_live_history()
-
-        # Update button text
-        self.live_btn.text = "\u25a0 STOP MIC"
-        self.live_btn.color = "#ff3333"
-        self.live_btn._draw_normal()
-
-        # Disable file-based buttons while live
-        self.analyze_btn.set_enabled(False)
-        self.recommend_btn.set_enabled(False)
-        self.explain_btn.set_enabled(False)
-        self.record_btn.set_enabled(False)
-
-        # Show live panel
+        self.live_btn.configure(text="■ STOP MIC", text_color="#ff3333", border_color="#ff3333")
+        self._disable_buttons(); self.live_btn.configure(state="normal")
         self._live_panel.pack(fill="both", expand=True, pady=(6, 0))
-
-        self.status_var.set("[ \u25cf LIVE MIC ACTIVE \u2014 listening \u2026 ]")
-        self._live_info_var.set("  Buffering audio \u2026")
-
+        self.status_var.set("[ ● LIVE MIC ACTIVE — listening … ]")
+        self._live_info_var.set("  Buffering audio …")
         try:
-            self._live_stream = sd.InputStream(
-                samplerate=self._live_sr,
-                channels=1,
-                dtype="float32",
-                blocksize=1024,
-                callback=self._mic_callback,
-            )
+            self._live_stream = sd.InputStream(samplerate=self._live_sr, channels=1, dtype="float32", blocksize=1024, callback=self._mic_callback)
             self._live_stream.start()
         except Exception as e:
-            messagebox.showerror("Mic Error", str(e))
-            self._stop_live_mic()
-            return
-
-        # Schedule periodic updates
+            messagebox.showerror("Mic Error", str(e)); self._stop_live_mic(); return
         self._live_spec_job = self.root.after(150, self._update_live_spectrogram)
         self._live_inference_job = self.root.after(6000, self._schedule_live_inference)
 
     def _stop_live_mic(self):
-        """Stop mic stream and hide live panel."""
         self._live_active = False
-
         if self._live_stream is not None:
-            try:
-                self._live_stream.stop()
-                self._live_stream.close()
-            except Exception:
-                pass
+            try: self._live_stream.stop(); self._live_stream.close()
+            except Exception: pass
             self._live_stream = None
-
-        # Cancel scheduled jobs
         if self._live_spec_job is not None:
-            self.root.after_cancel(self._live_spec_job)
-            self._live_spec_job = None
+            self.root.after_cancel(self._live_spec_job); self._live_spec_job = None
         if self._live_inference_job is not None:
-            self.root.after_cancel(self._live_inference_job)
-            self._live_inference_job = None
-
-        # Restore button
-        self.live_btn.text = "\U0001f3a4 LIVE MIC"
-        self.live_btn.color = "#ff6600"
-        self.live_btn._draw_normal()
-
-        # Hide live panel
+            self.root.after_cancel(self._live_inference_job); self._live_inference_job = None
+        self.live_btn.configure(text="🎤 LIVE MIC", text_color="#ff6600", border_color="#ff6600")
         self._live_panel.pack_forget()
-
-        # Re-enable buttons
         self._enable_buttons()
-        if self._selected_path:
-            self.analyze_btn.set_enabled(True)
-            self.recommend_btn.set_enabled(True)
-        else:
-            self.analyze_btn.set_enabled(False)
-            self.recommend_btn.set_enabled(False)
-        self.explain_btn.set_enabled(bool(self.result and "recommendations" in self.result))
-
+        if self._selected_path: self.analyze_btn.configure(state="normal"); self.recommend_btn.configure(state="normal")
+        else: self.analyze_btn.configure(state="disabled"); self.recommend_btn.configure(state="disabled")
+        self.explain_btn.configure(state="normal" if self.result and "recommendations" in self.result else "disabled")
         self.status_var.set("[ LIVE MIC STOPPED ]")
         self._live_info_var.set("")
 
     def _mic_callback(self, indata, frames, time_info, status):
-        """sounddevice callback — append samples to the ring buffer."""
         self._live_buffer.extend(indata[:, 0])
 
     def _update_live_spectrogram(self):
-        """Periodically redraw the rolling mel spectrogram from the buffer."""
-        if not self._live_active:
-            return
-
+        if not self._live_active: return
         buf = np.array(self._live_buffer, dtype=np.float32)
         if len(buf) > 2048:
-            # Compute mel spectrogram of the last ~3 s (or whatever is available)
             tail = buf[-self._live_sr * 3:]
             try:
-                mel = librosa.feature.melspectrogram(
-                    y=tail, sr=self._live_sr, n_mels=128,
-                    n_fft=2048, hop_length=512,
-                )
-                mel_db = librosa.power_to_db(mel, ref=np.max)
-                std = mel_db.std()
-                if std > 0:
-                    mel_db = (mel_db - mel_db.mean()) / std
-
-                # Roll existing data left and paste new columns
+                mel = librosa.feature.melspectrogram(y=tail, sr=self._live_sr, n_mels=128, n_fft=2048, hop_length=512)
+                mel_db = librosa.power_to_db(mel, ref=np.max); std = mel_db.std()
+                if std > 0: mel_db = (mel_db - mel_db.mean()) / std
                 n_new = mel_db.shape[1]
-                if n_new >= 200:
-                    self._live_spec_data = mel_db[:, -200:]
-                else:
-                    self._live_spec_data = np.roll(self._live_spec_data, -n_new, axis=1)
-                    self._live_spec_data[:, -n_new:] = mel_db
-
+                if n_new >= 200: self._live_spec_data = mel_db[:, -200:]
+                else: self._live_spec_data = np.roll(self._live_spec_data, -n_new, axis=1); self._live_spec_data[:, -n_new:] = mel_db
                 self._live_im.set_data(self._live_spec_data)
                 self._live_canvas.draw_idle()
-            except Exception:
-                pass  # skip frame on error
-
+            except Exception: pass
         self._live_spec_job = self.root.after(200, self._update_live_spectrogram)
 
     def _schedule_live_inference(self):
-        """Schedule a background inference on accumulated live audio."""
-        if not self._live_active:
-            return
+        if not self._live_active: return
         buf = np.array(self._live_buffer, dtype=np.float32)
-        if len(buf) >= self._live_sr * 3:  # need at least 3 s
-            thread = threading.Thread(
-                target=self._do_live_inference, args=(buf.copy(),), daemon=True,
-            )
-            thread.start()
-        # Re-schedule next inference cycle
+        if len(buf) >= self._live_sr * 3:
+            threading.Thread(target=self._do_live_inference, args=(buf.copy(),), daemon=True).start()
         self._live_inference_job = self.root.after(7000, self._schedule_live_inference)
 
     def _do_live_inference(self, signal):
-        """Run genre + emotion on the buffered signal (background thread)."""
         try:
             result = self.recommender.analyze_signal(signal, self._live_sr, "live mic")
-            g = result["genre"]
-            e = result["emotion"]
-
-            info = (
-                f"  Genre: {g['top_genre'].upper()}  ({g['confidence']:.0%})   "
-                f"\u00b7   Mood: {e['mood_label']}  "
-                f"(V={e['valence']:.1f}  A={e['arousal']:.1f})"
-            )
-            # Update UI from main thread
+            g = result["genre"]; e = result["emotion"]
+            info = f"  Genre: {g['top_genre'].upper()}  ({g['confidence']:.0%})   ·   Mood: {e['mood_label']}  (V={e['valence']:.1f}  A={e['arousal']:.1f})"
             self.root.after(0, self._live_info_var.set, info)
             self.root.after(0, lambda v=e["valence"], a=e["arousal"], c=g["confidence"]: self._update_va_plot(v, a, c))
-            self.root.after(0, self.status_var.set,
-                            f"[ \u25cf LIVE MIC \u2014 {g['top_genre'].upper()} ]")
-            # Populate the analysis panel so the user sees full details
+            self.root.after(0, self.status_var.set, f"[ ● LIVE MIC — {g['top_genre'].upper()} ]")
             self.root.after(0, self._show_live_analysis, result)
         except Exception as exc:
             self.root.after(0, self._live_info_var.set, f"  Inference error: {exc}")
 
     def _show_live_analysis(self, result):
-        """Update the analysis text panel with live mic inference results."""
-        self.result = result
-        self._show_analysis(result)
-
-    # ── Launch ──────────────────────────────────────────────────
+        self.result = result; self._show_analysis(result)
 
     def run(self):
         self.root.mainloop()

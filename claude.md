@@ -10,8 +10,8 @@
 2. Extracts audio features (Mel spectrograms + handcrafted stats via librosa)
 3. Classifies by **genre** (10-class FMA CNN + Transformer) and predicts **emotion** (valence/arousal regression)
 4. Fuses genre + emotion via weighted fuzzy scoring
-5. Recommends songs from a CSV database ranked by fused similarity
-6. UI: Retro arcade-themed Tkinter desktop app with live spectrogram, V-A plot, explainability panel
+5. Recommends songs natively via the **Spotify API** (ranked by fused similarity), falling back to a CSV database natively.
+6. UI: **CustomTkinter** glassmorphism desktop app featuring a dynamic hero carousel with circular album art, live spectrogram, V-A plot, and explainability mechanics.
 
 ---
 
@@ -19,9 +19,10 @@
 - **Language:** Python 3
 - **ML Framework:** TensorFlow / Keras (`.keras` format)
 - **Audio Processing:** librosa
-- **UI:** Tkinter (custom NeonButton widgets, matplotlib embeds)
+- **UI:** CustomTkinter (glassmorphism), Pillow, Tkinter
 - **Live Audio:** sounddevice
-- **Dependencies:** tensorflow>=2.15, numpy>=1.24, scikit-learn>=1.3, librosa>=0.10, sounddevice>=0.4, scipy>=1.11, pandas>=2.0, matplotlib>=3.7, seaborn>=0.13
+- **API:** spotipy, python-dotenv
+- **Dependencies:** tensorflow>=2.15, numpy>=1.24, scikit-learn>=1.3, librosa>=0.10, sounddevice>=0.4, scipy>=1.11, pandas>=2.0, matplotlib>=3.7, seaborn>=0.13, customtkinter>=5.2, spotipy>=2.23, Pillow>=10.0, python-dotenv>=1.0
 
 ---
 
@@ -45,7 +46,7 @@ Muud/
 │   └── genre_mel_cnn.keras      # Legacy GTZAN model (not used in current app)
 ├── ui/
 │   ├── __init__.py
-│   └── desktop_app.py           # MuudApp — Tkinter GUI (1350×860)
+│   └── desktop_app.py           # MuudApp — CustomTkinter GUI (Glassmorphism + Hero Carousel)
 ├── inference/
 │   ├── test_genre.py            # Sanity check: genre predictions on test_audio/
 │   ├── test_emotion.py          # Sanity check: V/A predictions on test_audio/

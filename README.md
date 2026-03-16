@@ -2,7 +2,7 @@
 
 A desktop application that uses **CNN-based genre classification**, **hybrid emotion regression (valence/arousal)**, and **fuzzy fusion scoring** to analyze music and recommend similar songs.
 
-Built with TensorFlow/Keras, librosa, and a retro arcade-themed Tkinter GUI.
+Built with TensorFlow/Keras, librosa, and a modern glassmorphism CustomTkinter GUI.
 
 ---
 
@@ -28,7 +28,7 @@ Built with TensorFlow/Keras, librosa, and a retro arcade-themed Tkinter GUI.
 | **Genre Classification** | 10-class CNN trained on FMA-medium (~68 % val accuracy). Softmax outputs used as fuzzy membership degrees. Multi-segment averaging + temperature scaling. Hybrid label when top-2 genres are within 0.10. |
 | **Emotion Regression** | Hybrid CNN + handcrafted features (tempo, spectral centroid, RMS, ZCR) → continuous Valence & Arousal on the DEAM 1–9 scale. Multi-segment averaging, V/A spread transform, and RMS-based arousal energy boost. |
 | **Fuzzy Fusion Scoring** | Weighted fusion: `0.7 × genre_similarity + 0.3 × emotion_similarity`. Graded genre similarity matrix captures inter-genre relationships. |
-| **Recommendation Engine** | Ranks a 60-song database by fused similarity score; top-N results displayed in a sortable table. |
+| **Recommendation Engine** | Fetches tracks natively via the Spotify API based on genre; falls back to a local database. Results are dynamically displayed in an interactive hero banner carousel with circular album art. |
 | **Live Microphone Mode** | Continuous streaming from the default microphone with a rolling spectrogram display and inference every ~7 s. Full analysis results update live. |
 | **5 s Microphone Recording** | Quick "REC 5 s" button — records, auto-analyzes, then cleans up the temp file. |
 | **Explainability Panel** | Collapsible panel showing fusion formula, genre membership bar chart, emotion similarity breakdown, and intermediate computation values. |
@@ -36,7 +36,7 @@ Built with TensorFlow/Keras, librosa, and a retro arcade-themed Tkinter GUI.
 | **Top-3 Genre Probabilities** | Results panel shows the top-3 predicted genres with percentage probabilities before the full bar chart. |
 | **Temporal Smoothing** | Live mic genre predictions are smoothed over a rolling buffer of 5 inference windows to reduce label flickering. |
 | **Singleton Model Loading** | `ModelRegistry` singleton loads all Keras models once at startup with warm-up passes — no reloading on repeated analyses. Results cached by file path. |
-| **Retro Arcade UI** | Dark navy theme, neon accents (cyan / magenta / green / yellow), custom 3D `NeonButton` canvas widgets, pulsing title animation, box-drawing characters. |
+| **Glassmorphism UI** | Dark navy theme, neon accents, CustomTkinter elements, translucent cards, circular album art, and an animated hero carousel. |
 
 ---
 
@@ -68,8 +68,8 @@ Muud/
 │
 ├── ui/                              # Desktop GUI
 │   ├── __init__.py
-│   └── desktop_app.py               # MuudApp Tkinter app — retro theme, NeonButton,
-│                                      V-A plot, live spectrogram, live mic streaming,
+│   └── desktop_app.py               # MuudApp CustomTkinter app — glassmorphism UI, hero
+│                                      carousel, V-A plot, live spectrogram, live mic streaming,
 │                                      5 s recording, analysis/recommend/explain panels
 │
 ├── models/                          # Trained model weights (git-ignored except JSON)
@@ -127,7 +127,7 @@ Or manually:
 
 ```bash
 pip install tensorflow librosa numpy pandas matplotlib seaborn scikit-learn
-pip install sounddevice scipy
+pip install sounddevice scipy customtkinter spotipy pillow python-dotenv
 ```
 
 ### 3. Download datasets
@@ -234,7 +234,7 @@ python main.py
 
 1. `ModelRegistry` singleton loads both Keras models from `models/`
 2. Warm-up forward passes compile TF graphs (first launch slightly slower)
-3. Retro-themed Tkinter window opens (1350 × 860)
+3. Modern glassmorphism CustomTkinter window opens.
 
 ### Controls
 
@@ -251,7 +251,7 @@ python main.py
 
 - **Results** — Top-3 genre probabilities, full fuzzy membership bar chart, mood quadrant, valence/arousal scores
 - **V-A Plot** — Russell's circumplex scatter; marker size scales with confidence
-- **Recommendations** — Sortable table ranked by fused similarity score
+- **Recommendations** — Interactive hero carousel featuring 30-sec previews, Spotify links, and fused score ranks
 - **Explainability** — Intermediate fusion computation values
 
 ---
@@ -329,6 +329,7 @@ This project integrates multiple soft computing paradigms:
 | 24 | Live microphone mode — continuous streaming, rolling spectrogram, ~7 s inference cycle |
 | 25 | Live mic → analysis panel — live inference results populate the full analysis text and V-A plot |
 | 26 | Codebase cleanup — updated README, .gitignore, requirements.txt; removed unused files |
+| 27 | Migrated entire UI to **CustomTkinter** glassmorphism design — added dynamic Hero Carousel, Spotify API album art integration, and smooth track navigation animations. |
 
 ---
 

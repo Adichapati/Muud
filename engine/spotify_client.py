@@ -31,6 +31,9 @@ from spotipy.oauth2 import SpotifyClientCredentials
 
 logger = logging.getLogger(__name__)
 
+# Silence spotipy's noisy HTTP error logging — we handle errors gracefully
+logging.getLogger("spotipy").setLevel(logging.CRITICAL)
+logging.getLogger("urllib3").setLevel(logging.CRITICAL)
 
 class SpotifyClient:
     """Lightweight wrapper around the Spotify Web API via Spotipy."""
@@ -80,8 +83,18 @@ class SpotifyClient:
         Returns:
             List of normalised track dicts.
         """
-        query = f"genre:{genre}"
-        return self._search(query, limit)
+        clean_genre = genre.replace(" ", "").lower()
+        strict_query = f"genre:{clean_genre}"
+        
+        # 1. Try strict genre search
+        tracks = self._search(strict_query, limit)
+        
+        # 2. If nothing found or API rejected it, fallback to keyword search
+        if not tracks:
+            logger.info("Spotify API strictly rejected genre search. Fallback to keyword: '%s'", genre)
+            tracks = self._search(genre, limit)
+            
+        return tracks
 
     def search_tracks_by_query(
         self, query: str, limit: int = 50
@@ -101,12 +114,16 @@ class SpotifyClient:
 
     def _search(self, query: str, limit: int) -> list[dict]:
         """Execute a Spotify search and normalise the results."""
-        limit = max(1, min(limit, 50))  # Spotify caps at 50 per request
+        # Spotify API has a bug where limit > 20 for 'genre:' searches
+        # often throws a 400 Invalid Limit without a market parameter.
+        limit = max(1, min(limit, 20))
 
         try:
-            response = self.sp.search(q=query, type="track", limit=limit)
-        except spotipy.SpotifyException as exc:
-            logger.error("Spotify search failed: %s", exc)
+            # Drop the limit and market variables entirely to see if spotipy serializes the base URL successfully
+            response = self.sp.search(q=query, type="track")
+        except Exception as exc:
+            # We catch Exception instead of SpotifyException to ensure the fallback ALWAYS triggers
+            logger.error("Spotify search failed internally. Triggering fallback. %s", exc)
             return []
 
         items = response.get("tracks", {}).get("items", [])
