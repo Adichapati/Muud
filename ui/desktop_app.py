@@ -19,7 +19,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 try:
-    from PIL import Image, ImageTk, ImageDraw
+    from PIL import Image, ImageTk, ImageDraw, ImageFilter, ImageEnhance
     _HAS_PIL = True
 except ImportError:
     _HAS_PIL = False
@@ -87,7 +87,7 @@ class MuudApp:
         self._carousel_recs = []
         self._carousel_idx = 0
         self._carousel_auto_job = None
-        self._carousel_art_cache = {}  # idx -> PhotoImage
+        self._carousel_art_cache = {}  # idx -> CTkImage
         self._carousel_animating = False
 
         self.root = ctk.CTk()
@@ -270,7 +270,7 @@ class MuudApp:
 
         # Left arrow
         self._left_arrow = ctk.CTkButton(
-            nav_row, text="◀", font=("Consolas", 22, "bold"), fg_color="transparent",
+            nav_row, text="◀", font=("Segoe UI", 24, "bold"), fg_color="transparent",
             text_color=NEON_CYAN, hover_color=BG_INPUT, width=44, height=44,
             corner_radius=22, command=self._carousel_prev
         )
@@ -283,41 +283,41 @@ class MuudApp:
         # Top: circular album art (centered)
         self._hero_art_frame = ctk.CTkFrame(self._hero_content, fg_color="transparent")
         self._hero_art_frame.pack(pady=(8, 10))
-        self._hero_art_label = tk.Label(self._hero_art_frame, text="♪", font=("Consolas", 36), fg=TEXT_DIM, bg=BG_PANEL)
+        self._hero_art_label = ctk.CTkLabel(self._hero_art_frame, text="♪", font=("Segoe UI", 64), text_color=TEXT_DIM, fg_color="transparent")
         self._hero_art_label.pack()
 
         # Song info
-        self._hero_title = tk.Label(self._hero_content, text="", font=("Consolas", 14, "bold"), fg=NEON_GREEN, bg=BG_PANEL, wraplength=380)
+        self._hero_title = ctk.CTkLabel(self._hero_content, text="", font=("Segoe UI", 20, "bold"), text_color=NEON_GREEN, wraplength=480)
         self._hero_title.pack(pady=(0, 2))
-        self._hero_artist = tk.Label(self._hero_content, text="", font=("Consolas", 11), fg=TEXT_PRIMARY, bg=BG_PANEL)
+        self._hero_artist = ctk.CTkLabel(self._hero_content, text="", font=("Segoe UI", 14), text_color=TEXT_PRIMARY)
         self._hero_artist.pack(pady=(0, 4))
-        self._hero_meta = tk.Label(self._hero_content, text="", font=("Consolas", 9), fg=TEXT_DIM, bg=BG_PANEL)
+        self._hero_meta = ctk.CTkLabel(self._hero_content, text="", font=("Segoe UI", 12), text_color=TEXT_DIM)
         self._hero_meta.pack(pady=(0, 8))
         
         # Score + VA bar
-        self._hero_stats = tk.Label(self._hero_content, text="", font=("Consolas", 9), fg=NEON_CYAN, bg=BG_PANEL)
-        self._hero_stats.pack(pady=(0, 8))
+        self._hero_stats = ctk.CTkLabel(self._hero_content, text="", font=("Segoe UI", 11), text_color=NEON_CYAN)
+        self._hero_stats.pack(pady=(0, 10))
 
         # Action buttons row
         self._hero_btns = ctk.CTkFrame(self._hero_content, fg_color="transparent")
         self._hero_btns.pack(pady=(0, 6))
 
         self._hero_play_btn = ctk.CTkButton(
-            self._hero_btns, text="▶ PLAY", font=FONT_BTN, fg_color=BG_INPUT,
+            self._hero_btns, text="▶ PLAY", font=("Segoe UI", 12, "bold"), fg_color=BG_INPUT,
             text_color=NEON_GREEN, border_color=NEON_GREEN, border_width=1,
-            hover_color="#1a2f1a", height=34, width=120
+            hover_color="#1a2f1a", height=38, width=150
         )
-        self._hero_play_btn.pack(side="left", padx=6)
+        self._hero_play_btn.pack(side="left", padx=8)
         self._hero_spotify_btn = ctk.CTkButton(
-            self._hero_btns, text="♫ SPOTIFY", font=FONT_BTN, fg_color=BG_INPUT,
+            self._hero_btns, text="♫ SPOTIFY", font=("Segoe UI", 12, "bold"), fg_color=BG_INPUT,
             text_color=NEON_CYAN, border_color=NEON_CYAN, border_width=1,
-            hover_color="#1a2a3f", height=34, width=120
+            hover_color="#1a2a3f", height=38, width=150
         )
-        self._hero_spotify_btn.pack(side="left", padx=6)
+        self._hero_spotify_btn.pack(side="left", padx=8)
 
         # Right arrow
         self._right_arrow = ctk.CTkButton(
-            nav_row, text="▶", font=("Consolas", 22, "bold"), fg_color="transparent",
+            nav_row, text="▶", font=("Segoe UI", 24, "bold"), fg_color="transparent",
             text_color=NEON_CYAN, hover_color=BG_INPUT, width=44, height=44,
             corner_radius=22, command=self._carousel_next
         )
@@ -517,10 +517,10 @@ class MuudApp:
         self._carousel_auto_start()
 
     def _generate_placeholder_art(self, idx, rec):
-        """Create a colorful circular placeholder with the track's initial."""
+        """Create a colorful circular placeholder with the track's initial using CTkImage."""
         if not _HAS_PIL:
             return None
-        size = 140
+        size = 240
         # Pick a gradient color based on index
         hue_palette = [
             (0, 229, 255),   # cyan
@@ -533,14 +533,12 @@ class MuudApp:
         c1 = hue_palette[idx % len(hue_palette)]
         c2 = hue_palette[(idx + 2) % len(hue_palette)]
 
-        # BG_PANEL is #0B0E14
-        bg_color = (11, 14, 20)
-        img = Image.new("RGB", (size, size), bg_color)
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         # Draw gradient circle (concentric rings)
         for r in range(size // 2, 0, -1):
             t = r / (size // 2)
-            color = tuple(int(c1[j] * t + c2[j] * (1 - t)) for j in range(3))
+            color = tuple(int(c1[j] * t + c2[j] * (1 - t)) for j in range(3)) + (255,)
             x0, y0 = size // 2 - r, size // 2 - r
             x1, y1 = size // 2 + r, size // 2 + r
             draw.ellipse((x0, y0, x1, y1), fill=color)
@@ -548,44 +546,44 @@ class MuudApp:
         # Draw the first letter of the track name
         track_name = rec.get("title") or rec.get("song") or "?"
         initial = track_name[0].upper() if track_name else "♪"
-        # Draw text centered
         try:
             from PIL import ImageFont
-            font = ImageFont.truetype("consola.ttf", 48)
+            font = ImageFont.truetype("segoeui.ttf", 96)
         except Exception:
             font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), initial, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         tx = (size - tw) // 2
-        ty = (size - th) // 2 - 4
-        # Dark shadow then white letter
-        draw.text((tx + 2, ty + 2), initial, fill=(0, 0, 0, 180), font=font)
+        ty = (size - th) // 2 - 8
+        draw.text((tx + 3, ty + 3), initial, fill=(0, 0, 0, 180), font=font)
         draw.text((tx, ty), initial, fill=(255, 255, 255, 240), font=font)
 
-        photo = ImageTk.PhotoImage(img)
+        photo = ctk.CTkImage(light_image=img, dark_image=img, size=(size, size))
         self._carousel_art_cache[idx] = photo
         return photo
 
     def _load_carousel_art(self, idx, url):
-        """Download and circularly mask album art for a carousel item."""
+        """Download and circularly mask album art for a carousel item using CTkImage."""
         try:
             data = urllib.request.urlopen(url, timeout=5).read()
-            img = Image.open(BytesIO(data)).resize((140, 140), Image.LANCZOS)
-            # Create circular mask
-            mask = Image.new("L", (140, 140), 0)
+            img = Image.open(BytesIO(data))
+
+            # Now create circular 240px album art
+            img = img.resize((240, 240), Image.LANCZOS)
+            mask = Image.new("L", (240, 240), 0)
             draw = ImageDraw.Draw(mask)
-            draw.ellipse((0, 0, 139, 139), fill=255)
-            # Apply mask: paste onto transparent background
-            out = Image.new("RGBA", (140, 140), (0, 0, 0, 0))
+            draw.ellipse((2, 2, 237, 237), fill=255) # slightly inset to prevent edge artifacts
+            out = Image.new("RGBA", (240, 240), (0, 0, 0, 0))
             img = img.convert("RGBA")
             out.paste(img, (0, 0), mask)
-            photo = ImageTk.PhotoImage(out)
+            
+            photo = ctk.CTkImage(light_image=out, dark_image=out, size=(240, 240))
             self._carousel_art_cache[idx] = photo
+
             # If this is the currently displayed item, update it
             if idx == self._carousel_idx:
                 def update_art():
-                    self._hero_art_label.config(image=photo, text="")
-                    self._hero_art_label.image = photo  # keep reference
+                    self._hero_art_label.configure(image=photo, text="")
                 self.root.after(0, update_art)
         except Exception:
             pass
@@ -601,34 +599,32 @@ class MuudApp:
         # Update art
         if idx in self._carousel_art_cache:
             photo = self._carousel_art_cache[idx]
-            self._hero_art_label.config(image=photo, text="")
-            self._hero_art_label.image = photo
+            self._hero_art_label.configure(image=photo, text="")
         else:
             # Generate placeholder on demand if not loading real art
             if not rec.get("album_art"):
                 photo = self._generate_placeholder_art(idx, rec)
                 if photo:
-                    self._hero_art_label.config(image=photo, text="")
-                    self._hero_art_label.image = photo
+                    self._hero_art_label.configure(image=photo, text="")
                 else:
-                    self._hero_art_label.config(image="", text="♪")
+                    self._hero_art_label.configure(image="", text="♪")
             else:
-                self._hero_art_label.config(image="", text="♪")
+                self._hero_art_label.configure(image="", text="♪")
 
         # Get title — CSV uses "song", Spotify uses "title"
         track_title = rec.get("title") or rec.get("song") or "Unknown"
 
         # Update text
-        rank_label = "★ TOP PICK" if idx == 0 else f"#{idx + 1}"
+        rank_label = "★ TOP PICK" if idx == 0 else f"{idx + 1}"
         title_color = NEON_GREEN if idx == 0 else NEON_CYAN
-        self._hero_title.config(text=f"{rank_label}  ·  {track_title}", fg=title_color)
-        self._hero_artist.config(text=rec.get("artist", "Unknown"))
-        self._hero_meta.config(text=f"{rec['genre'].upper()}  ·  Score: {rec['score']:.4f}")
+        self._hero_title.configure(text=f"{rank_label}  ·  {track_title}", text_color=title_color)
+        self._hero_artist.configure(text=rec.get("artist", "Unknown"))
+        self._hero_meta.configure(text=f"{rec['genre'].upper()}  ·  Score: {rec['score']:.4f}")
 
         va = f"V={rec['valence']:.1f}   A={rec['arousal']:.1f}"
         if rec.get("emotion_analyzed"):
             va += "   ✓ emotion-analyzed"
-        self._hero_stats.config(text=va, fg=NEON_CYAN if rec.get("emotion_analyzed") else TEXT_DIM)
+        self._hero_stats.configure(text=va, text_color=NEON_CYAN if rec.get("emotion_analyzed") else TEXT_DIM)
 
         # Update buttons
         p_url = rec.get("preview_url")
