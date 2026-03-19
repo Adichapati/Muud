@@ -24,11 +24,17 @@ data/GTZAN/
 data/FMA/
 
 # ─── Trained model weights ──────────────────────────────────
-# Re-generate by running training notebooks or Colab scripts.
+# By default, we track models under 100MB so the repo works out-of-the-box.
+# If you train larger models or massive weights (>100MB), GitHub will reject the push.
 # genre_labels.json is kept (small, needed at runtime).
-models/*.keras
-models/*.pkl
-models/*.h5
+# models/*.keras
+# models/*.pkl
+# models/*.h5
+
+# ─── Unused legacy models (locked during run) ───────────────
+models/genre_fma_cnn.keras
+models/genre_mel_cnn.keras
+models/genre_label_encoder.pkl
 
 # ─── Intermediate training artefacts ────────────────────────
 *.npy

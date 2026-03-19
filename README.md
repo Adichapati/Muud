@@ -72,9 +72,9 @@ Muud/
 │                                      carousel, V-A plot, live spectrogram, live mic streaming,
 │                                      5 s recording, analysis/recommend/explain panels
 │
-├── models/                          # Trained model weights (git-ignored except JSON)
-│   ├── best_genre_crnn.keras        # FMA 10-class genre CRNN (git-ignored)
-│   ├── emotion_hybrid_model.keras   # DEAM hybrid emotion regressor (git-ignored)
+├── models/                          # Trained model weights (Tracked in Git <100MB)
+│   ├── best_genre_crnn.keras        # FMA 10-class genre CRNN (tracked)
+│   ├── emotion_hybrid_model.keras   # DEAM hybrid emotion regressor (tracked)
 │   └── genre_labels.json            # Genre index → name mapping (tracked)
 │
 ├── data/                            # Datasets & song database
@@ -135,15 +135,11 @@ pip install sounddevice scipy customtkinter spotipy pillow python-dotenv
 See [Datasets](#datasets) below for download links and placement instructions.
 Datasets are only needed if you plan to retrain the models.
 
-### 4. Obtain trained models
+### 4. Trained Models (Included)
 
-**Option A — Train locally / on Colab:**
-Run the training notebooks (see [Training the Models](#training-the-models)).
+Since previously ignored trained models (`.keras`) are all safely under the 100MB limit, they are now **tracked by default** in the repository! 
 
-**Option B — Use pre-trained weights:**
-Place the `.keras` files in `models/`:
-- `models/best_genre_crnn.keras`
-- `models/emotion_hybrid_model.keras`
+You **no longer need** to manually train networks or download weights manually to run the Desktop App — you can launch it straight out-of-the-box! (If you plan to train *new* massive models >100MB, ensure you isolate them from git pushes).
 
 ### 5. Launch the app
 
