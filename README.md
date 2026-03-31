@@ -89,6 +89,10 @@ Muud/
 │   ├── fma_genre_clean.ipynb        # FMA-medium genre label cleaning / CSV prep
 │   ├── fma_dataset_inspection.ipynb # FMA-medium dataset analysis & genre selection
 │   ├── fusion_inference.ipynb       # End-to-end inference pipeline test
+│   ├── kaggle/                      # Scripts & notebooks run on Kaggle GPUs
+│   │   ├── genre_cnn_transformer_train.ipynb  # CNN+Transformer genre model (Kaggle T4)
+│   │   ├── genre_crnn_model.py      # CRNN architecture definition
+│   │   └── genre_crnn_train.py      # CRNN training script
 │   └── reports/                     # Saved figures from training runs
 │
 ├── inference/                       # Standalone test scripts
@@ -194,13 +198,13 @@ All datasets are **git-ignored** due to their size. Download and place them manu
 
 Run notebooks from an activated `emotioncnn` environment, or adapt them for **Google Colab** with GPU.
 
-### 1. Genre CNN — FMA-medium
+### 1. Genre CNN + Transformer — FMA-medium
 
-**Notebooks:** `training/fma_dataset_inspection.ipynb` → `training/fma_genre_clean.ipynb`
+**Notebooks:** `training/fma_dataset_inspection.ipynb` → `training/fma_genre_clean.ipynb` → `training/kaggle/genre_cnn_transformer_train.ipynb`
 
 1. `fma_dataset_inspection.ipynb` — downloads & inspects FMA-medium metadata, selects top-10 genres
 2. `fma_genre_clean.ipynb` — cleans genre labels, creates train/val CSV splits
-3. Train the CRNN (Kaggle recommended for GPU) → saves `models/best_genre_crnn.keras`
+3. `training/kaggle/genre_cnn_transformer_train.ipynb` — trains the CNN + Transformer model on Kaggle (T4 GPU, mixed-precision, class-weighted) → saves `models/best_genre_cnn_trans.keras`
 
 **Genre classes (10):** Classical, Electronic, Experimental, Folk, Hip-Hop, Instrumental, International, Old-Time / Historic, Pop, Rock
 
