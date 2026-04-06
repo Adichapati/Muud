@@ -1,5 +1,14 @@
 # MUUD — Hybrid Soft Computing Music Intelligence System
 
+```text
+███╗   ███╗██╗   ██╗██╗   ██╗██████╗
+████╗ ████║██║   ██║██║   ██║██╔══██╗
+██╔████╔██║██║   ██║██║   ██║██║  ██║
+██║╚██╔╝██║██║   ██║██║   ██║██║  ██║
+██║ ╚═╝ ██║╚██████╔╝╚██████╔╝██████╔╝
+╚═╝     ╚═╝ ╚═════╝  ╚═════╝ ╚═════╝
+```
+
 A desktop application that uses **CNN-based genre classification**, **hybrid emotion regression (valence/arousal)**, and **fuzzy fusion scoring** to analyze music and recommend similar songs.
 
 Built with TensorFlow/Keras, librosa, and a modern glassmorphism CustomTkinter GUI.
