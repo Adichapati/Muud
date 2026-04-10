@@ -26,9 +26,6 @@ _env_path = os.path.join(
 )
 load_dotenv(os.path.normpath(_env_path))
 
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
-
 logger = logging.getLogger(__name__)
 
 # Silence spotipy's noisy HTTP error logging — we handle errors gracefully
@@ -61,6 +58,14 @@ class SpotifyClient:
                 "Set SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET "
                 "environment variables, or pass them directly."
             )
+
+        try:
+            import spotipy
+            from spotipy.oauth2 import SpotifyClientCredentials
+        except ImportError as exc:
+            raise ValueError(
+                "spotipy is not installed. Install it with: pip install spotipy"
+            ) from exc
 
         auth_manager = SpotifyClientCredentials(
             client_id=cid,

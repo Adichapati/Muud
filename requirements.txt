@@ -12,3 +12,10 @@ scipy>=1.11
 pandas>=2.0
 matplotlib>=3.7
 seaborn>=0.13
+
+# App + integrations
+customtkinter>=5.2
+python-dotenv>=1.0
+spotipy>=2.24
+pillow>=10.0
+pygame>=2.5
